@@ -14,6 +14,8 @@ async function reviewRoutes(fastify, options) {
                 t.name as track_name,
                 c.id as conference_id, c.name as conference_name, c.short_name as conference_short_name, c.review_deadline,
                 r.id as review_id, r.overall_score, r.recommendation, r.is_draft, r.submitted_at,
+                r.q_relevance, r.q_structure, r.q_language, r.q_figures_tables, r.q_discussion_conclusions,
+                r.q_references_cited, r.q_comments_authors, r.q_special_comments_editor, r.q_reviewer_decision,
                 (SELECT json_agg(sf.*) FROM submission_files sf WHERE sf.submission_id = s.id) as files
          FROM reviewer_assignments ra
          JOIN submissions s ON ra.submission_id = s.id
@@ -38,7 +40,7 @@ async function reviewRoutes(fastify, options) {
 
     try {
       if (userRole === 'admin' || userRole === 'chair') {
-        // Chair/Admin sees all reviews for this submission with reviewer details
+        // Chair/Admin sees all reviews with full 9 questions + reviewer identities
         const reviewsRes = await db.query(
           `SELECT r.*, u.first_name as reviewer_first_name, u.last_name as reviewer_last_name, u.institution as reviewer_institution, u.email as reviewer_email
            FROM reviews r
@@ -56,7 +58,7 @@ async function reviewRoutes(fastify, options) {
         );
         return { review: reviewRes.rows[0] || null };
       } else {
-        // Authors can only see anonymized comments if decision is released
+        // Authors: Double-blind view of finalized reviews (Q1-Q7, Q9). Q8 (Special Comments to Editor) is hidden!
         const decCheck = await db.query(
           `SELECT pd.decision, s.corresponding_author_id 
            FROM submissions s
@@ -69,9 +71,13 @@ async function reviewRoutes(fastify, options) {
         }
 
         const authorReviewsRes = await db.query(
-          `SELECT technical_quality, originality, relevance, presentation_quality, overall_score, recommendation, comments_for_authors
+          `SELECT id, technical_quality, originality, relevance, presentation_quality, overall_score, recommendation,
+                  comments_for_authors, submitted_at,
+                  q_relevance, q_structure, q_language, q_figures_tables, q_discussion_conclusions,
+                  q_references_cited, q_comments_authors, q_reviewer_decision
            FROM reviews
-           WHERE submission_id = $1 AND is_draft = false`,
+           WHERE submission_id = $1 AND is_draft = false
+           ORDER BY submitted_at ASC`,
           [submissionId]
         );
         return { reviews: authorReviewsRes.rows };
@@ -81,11 +87,22 @@ async function reviewRoutes(fastify, options) {
     }
   });
 
-  // Submit or Save Draft Review
+  // Submit or Save Draft Review (Microsoft CMT 9-Question Standard)
   fastify.post('/submission/:submissionId', { preHandler: [authenticate] }, async (request, reply) => {
     const { submissionId } = request.params;
     const reviewerId = request.currentUser.id;
     const {
+      // 9 Questions
+      qRelevance = 'Relevant',
+      qStructure = 'Good',
+      qLanguage = 'Good',
+      qFiguresTables = 'Well Defined',
+      qDiscussionConclusions = 'Good',
+      qReferencesCited = 'Yes',
+      qCommentsAuthors = '',
+      qSpecialCommentsEditor = '',
+      qReviewerDecision = 'Accepted with Minor Revision',
+      // Legacy / score fields
       technicalQuality,
       originality,
       relevance,
@@ -113,11 +130,18 @@ async function reviewRoutes(fastify, options) {
         return reply.code(400).send({ error: 'This review is already finalized and cannot be converted back to a draft.' });
       }
 
+      const effectiveCommentsAuthors = qCommentsAuthors || commentsForAuthors || '';
+      const effectiveConfidentialNotes = qSpecialCommentsEditor || confidentialChairNotes || '';
+      const effectiveDecision = qReviewerDecision || recommendation || 'Accepted with Minor Revision';
+
       const res = await db.query(
         `INSERT INTO reviews (
             submission_id, reviewer_id, technical_quality, originality, relevance, presentation_quality,
-            overall_score, recommendation, comments_for_authors, confidential_chair_notes, is_draft, submitted_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, ${isDraft ? 'NULL' : 'CURRENT_TIMESTAMP'}, CURRENT_TIMESTAMP)
+            overall_score, recommendation, comments_for_authors, confidential_chair_notes,
+            q_relevance, q_structure, q_language, q_figures_tables, q_discussion_conclusions,
+            q_references_cited, q_comments_authors, q_special_comments_editor, q_reviewer_decision,
+            is_draft, submitted_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, ${isDraft ? 'NULL' : 'CURRENT_TIMESTAMP'}, CURRENT_TIMESTAMP)
          ON CONFLICT (submission_id, reviewer_id) DO UPDATE SET
             technical_quality = EXCLUDED.technical_quality,
             originality = EXCLUDED.originality,
@@ -127,6 +151,15 @@ async function reviewRoutes(fastify, options) {
             recommendation = EXCLUDED.recommendation,
             comments_for_authors = EXCLUDED.comments_for_authors,
             confidential_chair_notes = EXCLUDED.confidential_chair_notes,
+            q_relevance = EXCLUDED.q_relevance,
+            q_structure = EXCLUDED.q_structure,
+            q_language = EXCLUDED.q_language,
+            q_figures_tables = EXCLUDED.q_figures_tables,
+            q_discussion_conclusions = EXCLUDED.q_discussion_conclusions,
+            q_references_cited = EXCLUDED.q_references_cited,
+            q_comments_authors = EXCLUDED.q_comments_authors,
+            q_special_comments_editor = EXCLUDED.q_special_comments_editor,
+            q_reviewer_decision = EXCLUDED.q_reviewer_decision,
             is_draft = EXCLUDED.is_draft,
             submitted_at = CASE WHEN EXCLUDED.is_draft = false THEN CURRENT_TIMESTAMP ELSE reviews.submitted_at END,
             updated_at = CURRENT_TIMESTAMP
@@ -134,14 +167,23 @@ async function reviewRoutes(fastify, options) {
         [
           submissionId,
           reviewerId,
-          technicalQuality || null,
-          originality || null,
-          relevance || null,
-          presentationQuality || null,
-          overallScore || null,
-          recommendation || null,
-          commentsForAuthors || '',
-          confidentialChairNotes || '',
+          technicalQuality || 4,
+          originality || 4,
+          relevance || 4,
+          presentationQuality || 4,
+          overallScore || 4,
+          effectiveDecision,
+          effectiveCommentsAuthors,
+          effectiveConfidentialNotes,
+          qRelevance,
+          qStructure,
+          qLanguage,
+          qFiguresTables,
+          qDiscussionConclusions,
+          qReferencesCited,
+          effectiveCommentsAuthors,
+          effectiveConfidentialNotes,
+          effectiveDecision,
           isDraft,
         ]
       );
@@ -154,7 +196,7 @@ async function reviewRoutes(fastify, options) {
         action: isDraft ? 'REVIEW_DRAFT_SAVED' : 'REVIEW_SUBMITTED',
         entityType: 'review',
         entityId: res.rows[0].id,
-        details: { submissionId, isDraft, overallScore, recommendation },
+        details: { submissionId, isDraft, decision: effectiveDecision },
       });
 
       return {
