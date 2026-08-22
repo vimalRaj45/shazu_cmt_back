@@ -1,0 +1,31 @@
+{
+  "name": "shazusoft-cmt-backend",
+  "version": "1.0.0",
+  "description": "Internal Conference Management Tool Backend for Shazu Soft Technologies",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "db:migrate": "node src/db/migrate.js",
+    "db:seed": "node src/db/seed.js",
+    "db:truncate": "node src/db/truncate.js",
+    "db:reset": "node src/db/reset.js",
+    "test": "node test/test_all_endpoints.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.750.0",
+    "@aws-sdk/s3-request-presigner": "^3.750.0",
+    "@fastify/cors": "^10.0.2",
+    "@fastify/jwt": "^9.0.4",
+    "@fastify/multipart": "^9.0.3",
+    "@getbrevo/brevo": "^2.2.0",
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "pg": "^8.13.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
