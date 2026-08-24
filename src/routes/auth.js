@@ -8,14 +8,26 @@ const { fetchOrcidProfile, cleanOrcid, isValidOrcid, getOrcidOAuthUrl, exchangeO
 async function authRoutes(fastify, options) {
   // Get ORCID OAuth URL
   fastify.get('/orcid/url', async (request, reply) => {
-    const { redirectUri } = request.query || {};
-    const authData = getOrcidOAuthUrl(redirectUri);
-    return authData;
+    try {
+      const { redirectUri } = request.query || {};
+      console.log('[Auth Route] Generating ORCID OAuth URL for redirectUri:', redirectUri);
+      const authData = getOrcidOAuthUrl(redirectUri);
+      return authData;
+    } catch (err) {
+      console.error('[Auth Route] Error in /orcid/url:', err);
+      return reply.code(500).send({ error: 'Failed to generate ORCID OAuth URL: ' + err.message });
+    }
   });
 
   // ORCID OAuth Callback (Exchange Code & Sign-in/Sign-up)
   fastify.post('/orcid/callback', async (request, reply) => {
     const { code, redirectUri } = request.body || {};
+    console.log('[Auth Route] /orcid/callback received request:', {
+      hasCode: Boolean(code),
+      codePrefix: code ? String(code).slice(0, 8) : null,
+      redirectUri,
+    });
+
     if (!code) {
       return reply.code(400).send({ error: 'Authorization code is required' });
     }
@@ -23,6 +35,7 @@ async function authRoutes(fastify, options) {
     try {
       // 1. Exchange code with ORCID
       const orcidData = await exchangeOrcidOAuthCode(code, redirectUri);
+      console.log('[Auth Route] ORCID code exchanged successfully:', orcidData);
       const cleanedOrcid = cleanOrcid(orcidData.orcid);
 
       if (!cleanedOrcid) {
