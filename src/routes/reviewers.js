@@ -2,6 +2,7 @@ const db = require('../config/db');
 const { authenticate, requireRoles } = require('../middlewares/auth');
 const { sendReviewerInvitation } = require('../services/emailService');
 const { logAudit } = require('../services/auditService');
+const { calculateReviewerMatchScore, generateAiAutoAssignmentPlan } = require('../services/aiAssignService');
 
 async function reviewerRoutes(fastify, options) {
   // Get conference reviewer pool (with status and load count)
@@ -9,7 +10,9 @@ async function reviewerRoutes(fastify, options) {
     const { conferenceId } = request.params;
     try {
       const res = await db.query(
-        `SELECT u.id, u.email, u.first_name, u.last_name, u.institution, u.department, u.country, u.expertise_keywords,
+        `SELECT u.id, u.email, u.first_name, u.last_name, u.institution, u.department, u.country,
+                u.qualification, u.designation, u.domain, u.areas_of_interest, u.expertise_keywords,
+                COALESCE(u.max_review_limit, 3) as max_review_limit, u.orcid_id, u.bio,
                 cr.status as invitation_status, cr.invited_at, cr.responded_at,
                 (SELECT COUNT(*) FROM reviewer_assignments ra 
                  JOIN submissions s ON ra.submission_id = s.id 
@@ -61,14 +64,17 @@ async function reviewerRoutes(fastify, options) {
     }
   });
 
-  // Check conflicts for a submission against all conference reviewers
+  // Check conflicts and compute AI match scores for a submission against all conference reviewers
   fastify.get('/conflicts/submission/:submissionId', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
     const { submissionId } = request.params;
     try {
       const subRes = await db.query(
-        `SELECT s.id, s.conference_id, s.corresponding_author_id, u.institution as author_institution, u.email as author_email
+        `SELECT s.id, s.title, s.abstract, s.keywords, s.conference_id, s.corresponding_author_id,
+                u.institution as author_institution, u.email as author_email,
+                t.name as track_name
          FROM submissions s
          JOIN users u ON s.corresponding_author_id = u.id
+         LEFT JOIN tracks t ON s.track_id = t.id
          WHERE s.id = $1`,
         [submissionId]
       );
@@ -85,10 +91,15 @@ async function reviewerRoutes(fastify, options) {
 
       // Fetch all reviewers for this conference
       const revRes = await db.query(
-        `SELECT u.id, u.email, u.first_name, u.last_name, u.institution, u.expertise_keywords
+        `SELECT u.id, u.email, u.first_name, u.last_name, u.institution, u.department, u.country,
+                u.qualification, u.designation, u.domain, u.areas_of_interest, u.expertise_keywords,
+                COALESCE(u.max_review_limit, 3) as max_review_limit,
+                (SELECT COUNT(*) FROM reviewer_assignments ra 
+                 JOIN submissions s ON ra.submission_id = s.id 
+                 WHERE ra.reviewer_id = u.id AND s.conference_id = $1) as assigned_papers_count
          FROM conference_reviewers cr
          JOIN users u ON cr.reviewer_id = u.id
-         WHERE cr.conference_id = $1`,
+         WHERE cr.conference_id = $1 AND cr.status = 'accepted'`,
         [sub.conference_id]
       );
 
@@ -102,7 +113,7 @@ async function reviewerRoutes(fastify, options) {
         manualConflictsMap[c.reviewer_id] = c;
       });
 
-      // Compute conflict status for each reviewer
+      // Compute conflict status and AI match score for each reviewer
       const analyzedReviewers = revRes.rows.map((rev) => {
         let hasConflict = false;
         let conflictReason = '';
@@ -118,11 +129,21 @@ async function reviewerRoutes(fastify, options) {
           conflictReason = manualConflictsMap[rev.id].notes || `Declared conflict (${manualConflictsMap[rev.id].conflict_type})`;
         }
 
+        // Calculate AI match rating
+        const matchData = calculateReviewerMatchScore(sub, rev);
+
         return {
           ...rev,
           hasConflict,
           conflictReason,
+          ...matchData,
         };
+      });
+
+      // Sort by match score descending (conflict-free ones first)
+      analyzedReviewers.sort((a, b) => {
+        if (a.hasConflict !== b.hasConflict) return a.hasConflict ? 1 : -1;
+        return b.matchScore - a.matchScore;
       });
 
       return { reviewersWithConflictStatus: analyzedReviewers };
@@ -131,7 +152,108 @@ async function reviewerRoutes(fastify, options) {
     }
   });
 
-  // Assign Reviewer to paper
+  // ✨ AI Auto-Assignment Simulation & Preview
+  fastify.post('/conference/:conferenceId/ai-assign/preview', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
+    const { conferenceId } = request.params;
+    const { targetReviewsPerPaper = 2, maxReviewsPerReviewer = 3, onlyUnassigned = true } = request.body || {};
+
+    try {
+      const plan = await generateAiAutoAssignmentPlan(conferenceId, {
+        targetReviewsPerPaper: parseInt(targetReviewsPerPaper, 10) || 2,
+        maxReviewsPerReviewer: parseInt(maxReviewsPerReviewer, 10) || 3,
+        onlyUnassigned: Boolean(onlyUnassigned),
+      });
+
+      return plan;
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: 'Failed to generate AI auto-assignment plan', details: err.message });
+    }
+  });
+
+  // ✨ AI Auto-Assignment Apply & Commit
+  fastify.post('/conference/:conferenceId/ai-assign/apply', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
+    const { conferenceId } = request.params;
+    const { assignments = [] } = request.body || {};
+
+    if (!Array.isArray(assignments) || assignments.length === 0) {
+      return reply.code(400).send({ error: 'No assignments provided to apply' });
+    }
+
+    try {
+      // Fetch conference details for emails
+      const confRes = await db.query('SELECT id, name, short_name, review_deadline FROM conferences WHERE id = $1', [conferenceId]);
+      const conf = confRes.rows[0] || { id: conferenceId };
+
+      let appliedCount = 0;
+      const assignedPaperIds = new Set();
+
+      for (const item of assignments) {
+        const { submissionId, reviewerId } = item;
+        if (!submissionId || !reviewerId) continue;
+
+        // Insert assignment
+        const assignRes = await db.query(
+          `INSERT INTO reviewer_assignments (submission_id, reviewer_id, assigned_by, invitation_status)
+           VALUES ($1, $2, $3, 'accepted')
+           ON CONFLICT (submission_id, reviewer_id) DO NOTHING
+           RETURNING *;`,
+          [submissionId, reviewerId, request.currentUser.id]
+        );
+
+        if (assignRes.rows.length > 0) {
+          appliedCount++;
+          assignedPaperIds.add(submissionId);
+
+          // Asynchronously notify reviewer
+          db.query('SELECT * FROM users WHERE id = $1', [reviewerId]).then((uRes) => {
+            if (uRes.rows.length > 0) {
+              const reviewer = uRes.rows[0];
+              db.query('SELECT id, submission_number, title FROM submissions WHERE id = $1', [submissionId]).then((sRes) => {
+                if (sRes.rows.length > 0) {
+                  sendReviewerInvitation({
+                    reviewer,
+                    conference: conf,
+                    submission: sRes.rows[0],
+                  }).catch((e) => console.error('Failed to notify reviewer:', e.message));
+                }
+              });
+            }
+          });
+        }
+      }
+
+      // Update paper statuses to under_review
+      if (assignedPaperIds.size > 0) {
+        await db.query(
+          `UPDATE submissions SET status = 'under_review', updated_at = CURRENT_TIMESTAMP 
+           WHERE id = ANY($1::int[]) AND status = 'submitted'`,
+          [Array.from(assignedPaperIds)]
+        );
+      }
+
+      await logAudit({
+        conferenceId,
+        userId: request.currentUser.id,
+        action: 'AI_AUTO_ASSIGNMENT_EXECUTED',
+        entityType: 'reviewer_assignments',
+        entityId: conferenceId,
+        details: { totalApplied: appliedCount, papersCount: assignedPaperIds.size },
+      });
+
+      return {
+        success: true,
+        appliedCount,
+        papersUpdated: assignedPaperIds.size,
+        message: `Successfully executed ${appliedCount} AI paper-reviewer assignment(s).`,
+      };
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: 'Failed to execute AI auto-assignments', details: err.message });
+    }
+  });
+
+  // Assign Reviewer to paper (Manual)
   fastify.post('/assign', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
     const { submissionId, reviewerId } = request.body || {};
 

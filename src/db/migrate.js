@@ -38,6 +38,23 @@ async function migrate() {
       console.log('Review columns notice:', reviewColErr.message);
     }
 
+    // Safely add profile columns to users table if not exists
+    try {
+      await db.query(`
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS qualification VARCHAR(100);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS designation VARCHAR(150);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS domain VARCHAR(150);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS areas_of_interest TEXT[] DEFAULT '{}';
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS expertise_keywords TEXT[] DEFAULT '{}';
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS max_review_limit INTEGER DEFAULT 3;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS orcid_id VARCHAR(50);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS google_scholar_url TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT;
+      `);
+    } catch (userColErr) {
+      console.log('User columns notice:', userColErr.message);
+    }
+
     // Safely update check constraint for 3 roles: admin, reviewer, author
     try {
       await db.query(`

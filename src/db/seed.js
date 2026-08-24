@@ -17,7 +17,13 @@ async function seed() {
         department: 'Operations & IT',
         country: 'India',
         role: 'admin',
+        qualification: 'Ph.D. in Computer Science',
+        designation: 'Director of Technology',
+        domain: 'Computer Science & Engineering',
+        areas_of_interest: ['Cloud Infrastructure', 'System Architecture', 'Security'],
         expertise_keywords: ['System Architecture', 'Cloud Infrastructure', 'Security'],
+        max_review_limit: 5,
+        bio: 'Senior Technical Administrator and CMT Systems Architect.',
       },
       {
         email: 'chair@shazusoft.com',
@@ -28,7 +34,13 @@ async function seed() {
         department: 'Computer Science & AI',
         country: 'India',
         role: 'admin',
+        qualification: 'Ph.D. in Artificial Intelligence',
+        designation: 'Professor & Head of Research',
+        domain: 'Artificial Intelligence & Machine Learning',
+        areas_of_interest: ['Artificial Intelligence', 'Machine Learning', 'Computer Vision', 'Deep Learning'],
         expertise_keywords: ['Artificial Intelligence', 'Machine Learning', 'Computer Vision'],
+        max_review_limit: 4,
+        bio: 'General Program Chair and Senior Researcher in Deep Learning and Computer Vision.',
       },
       {
         email: 'reviewer1@shazusoft.com',
@@ -39,7 +51,14 @@ async function seed() {
         department: 'Computer Science & Engineering',
         country: 'India',
         role: 'reviewer',
+        qualification: 'Ph.D. in Computer Science',
+        designation: 'Professor',
+        domain: 'Artificial Intelligence & Machine Learning',
+        areas_of_interest: ['Machine Learning', 'Deep Learning', 'Natural Language Processing', 'Transformers', 'Large Language Models'],
         expertise_keywords: ['Machine Learning', 'Deep Learning', 'NLP'],
+        max_review_limit: 3,
+        orcid_id: '0000-0002-1825-0097',
+        bio: 'Specialist in Natural Language Processing, Transformer models, and Multilingual representations.',
       },
       {
         email: 'reviewer2@shazusoft.com',
@@ -50,7 +69,14 @@ async function seed() {
         department: 'Information Systems',
         country: 'Singapore',
         role: 'reviewer',
+        qualification: 'Ph.D. in Information Security',
+        designation: 'Associate Professor',
+        domain: 'Cybersecurity & Privacy',
+        areas_of_interest: ['Cyber Security', 'Cryptography', 'Cloud Systems', 'Network Security', 'Zero Trust'],
         expertise_keywords: ['Cyber Security', 'Cryptography', 'Cloud Systems'],
+        max_review_limit: 3,
+        orcid_id: '0000-0001-9032-4412',
+        bio: 'Security researcher with focus on Applied Cryptography and Cloud Security Architecture.',
       },
       {
         email: 'reviewer3@shazusoft.com',
@@ -61,7 +87,14 @@ async function seed() {
         department: 'Electrical Engineering & Computer Science',
         country: 'United States',
         role: 'reviewer',
+        qualification: 'Ph.D. in Computer Systems',
+        designation: 'Assistant Professor',
+        domain: 'Internet of Things & Embedded Systems',
+        areas_of_interest: ['IoT', 'Edge Computing', 'Distributed Systems', 'Sensor Networks', 'Cloud Infrastructure'],
         expertise_keywords: ['IoT', 'Edge Computing', 'Distributed Systems'],
+        max_review_limit: 4,
+        orcid_id: '0000-0003-4921-8890',
+        bio: 'Researcher in Edge AI acceleration, distributed sensor networks, and IoT protocol optimization.',
       },
       {
         email: 'author@shazusoft.com',
@@ -72,7 +105,13 @@ async function seed() {
         department: 'Software Engineering',
         country: 'India',
         role: 'author',
+        qualification: 'Master of Technology (M.Tech)',
+        designation: 'Senior Lead Engineer',
+        domain: 'Software Engineering & Web Systems',
+        areas_of_interest: ['Natural Language Processing', 'Fastify', 'React', 'Fullstack Architecture'],
         expertise_keywords: ['Natural Language Processing', 'Fastify', 'React'],
+        max_review_limit: 2,
+        bio: 'Lead Engineer building intelligent conference and enterprise platforms.',
       },
     ];
 
@@ -80,16 +119,40 @@ async function seed() {
 
     for (const u of users) {
       const res = await db.query(
-        `INSERT INTO users (email, password_hash, first_name, last_name, institution, department, country, role, expertise_keywords)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO users (email, password_hash, first_name, last_name, institution, department, country, role, qualification, designation, domain, areas_of_interest, expertise_keywords, max_review_limit, orcid_id, bio)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          ON CONFLICT (email) DO UPDATE SET 
             first_name = EXCLUDED.first_name,
             last_name = EXCLUDED.last_name,
             role = EXCLUDED.role,
             institution = EXCLUDED.institution,
-            expertise_keywords = EXCLUDED.expertise_keywords
+            qualification = EXCLUDED.qualification,
+            designation = EXCLUDED.designation,
+            domain = EXCLUDED.domain,
+            areas_of_interest = EXCLUDED.areas_of_interest,
+            expertise_keywords = EXCLUDED.expertise_keywords,
+            max_review_limit = EXCLUDED.max_review_limit,
+            orcid_id = EXCLUDED.orcid_id,
+            bio = EXCLUDED.bio
          RETURNING id, email, role;`,
-        [u.email, u.password_hash, u.first_name, u.last_name, u.institution, u.department, u.country, u.role, u.expertise_keywords]
+        [
+          u.email,
+          u.password_hash,
+          u.first_name,
+          u.last_name,
+          u.institution,
+          u.department,
+          u.country,
+          u.role,
+          u.qualification || '',
+          u.designation || '',
+          u.domain || '',
+          u.areas_of_interest || [],
+          u.expertise_keywords || [],
+          u.max_review_limit || 3,
+          u.orcid_id || null,
+          u.bio || '',
+        ]
       );
       userMap[u.email] = res.rows[0].id;
     }

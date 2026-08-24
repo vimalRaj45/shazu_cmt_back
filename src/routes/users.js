@@ -8,7 +8,10 @@ async function userRoutes(fastify, options) {
   fastify.get('/', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
     try {
       const { role, search } = request.query || {};
-      let queryText = 'SELECT id, email, first_name, last_name, institution, department, country, role, expertise_keywords, created_at FROM users WHERE 1=1';
+      let queryText = `SELECT id, email, first_name, last_name, institution, department, country, role, 
+                              qualification, designation, domain, areas_of_interest, expertise_keywords, 
+                              max_review_limit, orcid_id, google_scholar_url, bio, created_at 
+                       FROM users WHERE 1=1`;
       const params = [];
 
       if (role) {
@@ -18,7 +21,7 @@ async function userRoutes(fastify, options) {
 
       if (search) {
         params.push(`%${search}%`);
-        queryText += ` AND (first_name ILIKE $${params.length} OR last_name ILIKE $${params.length} OR email ILIKE $${params.length} OR institution ILIKE $${params.length})`;
+        queryText += ` AND (first_name ILIKE $${params.length} OR last_name ILIKE $${params.length} OR email ILIKE $${params.length} OR institution ILIKE $${params.length} OR domain ILIKE $${params.length})`;
       }
 
       queryText += ' ORDER BY id ASC';
@@ -33,7 +36,9 @@ async function userRoutes(fastify, options) {
   fastify.get('/reviewers', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
     try {
       const res = await db.query(
-        `SELECT id, email, first_name, last_name, institution, department, country, expertise_keywords 
+        `SELECT id, email, first_name, last_name, institution, department, country, 
+                qualification, designation, domain, areas_of_interest, expertise_keywords, 
+                max_review_limit, orcid_id, bio
          FROM users 
          WHERE role IN ('reviewer', 'chair', 'admin') 
          ORDER BY first_name ASC`
@@ -47,7 +52,21 @@ async function userRoutes(fastify, options) {
   // Admin update user role or info
   fastify.put('/:id', { preHandler: [authenticate, requireRoles('admin')] }, async (request, reply) => {
     const { id } = request.params;
-    const { role, firstName, lastName, institution, department, country, expertiseKeywords } = request.body || {};
+    const {
+      role,
+      firstName,
+      lastName,
+      institution,
+      department,
+      country,
+      qualification,
+      designation,
+      domain,
+      areasOfInterest,
+      expertiseKeywords,
+      maxReviewLimit,
+      bio,
+    } = request.body || {};
 
     try {
       const res = await db.query(
@@ -58,11 +77,17 @@ async function userRoutes(fastify, options) {
             institution = COALESCE($4, institution),
             department = COALESCE($5, department),
             country = COALESCE($6, country),
-            expertise_keywords = COALESCE($7, expertise_keywords),
+            qualification = COALESCE($7, qualification),
+            designation = COALESCE($8, designation),
+            domain = COALESCE($9, domain),
+            areas_of_interest = COALESCE($10, areas_of_interest),
+            expertise_keywords = COALESCE($11, expertise_keywords),
+            max_review_limit = COALESCE($12, max_review_limit),
+            bio = COALESCE($13, bio),
             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $8
-         RETURNING id, email, first_name, last_name, institution, department, country, role, expertise_keywords;`,
-        [role, firstName, lastName, institution, department, country, expertiseKeywords, id]
+         WHERE id = $14
+         RETURNING id, email, first_name, last_name, institution, department, country, role, qualification, designation, domain, areas_of_interest, expertise_keywords, max_review_limit, bio;`,
+        [role, firstName, lastName, institution, department, country, qualification, designation, domain, areasOfInterest, expertiseKeywords, maxReviewLimit, bio, id]
       );
 
       if (res.rows.length === 0) {
