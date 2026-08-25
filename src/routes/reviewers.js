@@ -155,11 +155,11 @@ async function reviewerRoutes(fastify, options) {
   // ✨ AI Auto-Assignment Simulation & Preview
   fastify.post('/conference/:conferenceId/ai-assign/preview', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
     const { conferenceId } = request.params;
-    const { targetReviewsPerPaper = 2, maxReviewsPerReviewer = 3, onlyUnassigned = true } = request.body || {};
+    const { targetReviewsPerPaper = 1, maxReviewsPerReviewer = 3, onlyUnassigned = true } = request.body || {};
 
     try {
       const plan = await generateAiAutoAssignmentPlan(conferenceId, {
-        targetReviewsPerPaper: parseInt(targetReviewsPerPaper, 10) || 2,
+        targetReviewsPerPaper: parseInt(targetReviewsPerPaper, 10) || 1,
         maxReviewsPerReviewer: parseInt(maxReviewsPerReviewer, 10) || 3,
         onlyUnassigned: Boolean(onlyUnassigned),
       });
