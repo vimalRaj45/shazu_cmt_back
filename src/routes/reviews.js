@@ -2,6 +2,23 @@ const db = require('../config/db');
 const { authenticate } = require('../middlewares/auth');
 const { logAudit } = require('../services/auditService');
 
+function mapToDbRecommendation(val) {
+  const s = String(val || '').toLowerCase();
+  if (s.includes('minor')) return 'minor_revision';
+  if (s.includes('major') || s.includes('revision')) return 'major_revision';
+  if (s.includes('reject')) return 'reject';
+  return 'accept';
+}
+
+function calculateScoreFromRubric(qRev, qStruct, qLang, qDec) {
+  const d = String(qDec || '').toLowerCase();
+  if (d.includes('accept') && !d.includes('revision')) return 5;
+  if (d.includes('minor')) return 4;
+  if (d.includes('major')) return 3;
+  if (d.includes('reject')) return 2;
+  return 4;
+}
+
 async function reviewRoutes(fastify, options) {
   // Reviewer: List my assigned papers
   fastify.get('/my-assignments', { preHandler: [authenticate] }, async (request, reply) => {
@@ -115,13 +132,22 @@ async function reviewRoutes(fastify, options) {
     } = request.body || {};
 
     try {
-      // Verify reviewer assignment
+      // Verify reviewer assignment (or auto-assign if admin testing)
       const assignCheck = await db.query(
         'SELECT id FROM reviewer_assignments WHERE submission_id = $1 AND reviewer_id = $2',
         [submissionId, reviewerId]
       );
-      if (assignCheck.rows.length === 0 && request.currentUser.role !== 'admin') {
-        return reply.code(403).send({ error: 'You are not assigned to review this paper.' });
+      if (assignCheck.rows.length === 0) {
+        if (request.currentUser.role === 'admin') {
+          await db.query(
+            `INSERT INTO reviewer_assignments (submission_id, reviewer_id, assigned_by, invitation_status)
+             VALUES ($1, $2, $3, 'accepted')
+             ON CONFLICT (submission_id, reviewer_id) DO NOTHING`,
+            [submissionId, reviewerId, reviewerId]
+          );
+        } else {
+          return reply.code(403).send({ error: 'You are not assigned to review this paper.' });
+        }
       }
 
       // Check if already locked
@@ -133,6 +159,8 @@ async function reviewRoutes(fastify, options) {
       const effectiveCommentsAuthors = qCommentsAuthors || commentsForAuthors || '';
       const effectiveConfidentialNotes = qSpecialCommentsEditor || confidentialChairNotes || '';
       const effectiveDecision = qReviewerDecision || recommendation || 'Accepted with Minor Revision';
+      const dbRecommendation = mapToDbRecommendation(effectiveDecision);
+      const computedScore = overallScore || calculateScoreFromRubric(qRelevance, qStructure, qLanguage, effectiveDecision);
 
       const res = await db.query(
         `INSERT INTO reviews (
@@ -167,12 +195,12 @@ async function reviewRoutes(fastify, options) {
         [
           submissionId,
           reviewerId,
-          technicalQuality || 4,
-          originality || 4,
-          relevance || 4,
-          presentationQuality || 4,
-          overallScore || 4,
-          effectiveDecision,
+          technicalQuality || computedScore,
+          originality || computedScore,
+          relevance || computedScore,
+          presentationQuality || computedScore,
+          computedScore,
+          dbRecommendation,
           effectiveCommentsAuthors,
           effectiveConfidentialNotes,
           qRelevance,
