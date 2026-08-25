@@ -286,9 +286,23 @@ async function reviewerRoutes(fastify, options) {
       }
       const reviewer = revRes.rows[0];
 
-      // Block if author or same institution
-      if (sub.corresponding_author_id === reviewerId || (sub.author_institution && reviewer.institution && sub.author_institution.toLowerCase().trim() === reviewer.institution.toLowerCase().trim())) {
-        return reply.code(400).send({ error: 'Cannot assign reviewer: Institutional or authorship conflict detected.' });
+      // Fetch co-author institutions and emails
+      const coAuthorsRes = await db.query('SELECT email, institution FROM submission_authors WHERE submission_id = $1', [submissionId]);
+      const authorInstitutions = new Set([sub.author_institution, ...coAuthorsRes.rows.map((a) => a.institution)].filter(Boolean).map((i) => i.toLowerCase().trim()));
+      const authorEmails = new Set([sub.author_email, ...coAuthorsRes.rows.map((a) => a.email)].filter(Boolean).map((e) => e.toLowerCase().trim()));
+
+      // Check manually declared conflicts
+      const conflictRes = await db.query('SELECT id, conflict_type, notes FROM conflicts WHERE submission_id = $1 AND reviewer_id = $2', [submissionId, reviewerId]);
+
+      // Comprehensive COI validation
+      if (sub.corresponding_author_id === reviewerId || (reviewer.email && authorEmails.has(reviewer.email.toLowerCase().trim()))) {
+        return reply.code(400).send({ error: 'Conflict of Interest (COI): Cannot assign reviewer who is the primary author or co-author of this paper.' });
+      }
+      if (reviewer.institution && authorInstitutions.has(reviewer.institution.toLowerCase().trim())) {
+        return reply.code(400).send({ error: `Conflict of Interest (COI): Institutional conflict detected with "${reviewer.institution}". Reviewers cannot evaluate papers from their own institution.` });
+      }
+      if (conflictRes.rows.length > 0) {
+        return reply.code(400).send({ error: `Conflict of Interest (COI): Declared conflict on record (${conflictRes.rows[0].conflict_type}: ${conflictRes.rows[0].notes || 'Conflict active'}).` });
       }
 
       // Insert assignment
