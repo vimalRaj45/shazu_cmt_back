@@ -11,7 +11,8 @@ async function cameraReadyRoutes(fastify, options) {
         `SELECT s.id, s.submission_number, s.title, s.status, s.updated_at,
                 t.name as track_name,
                 u.first_name as author_first_name, u.last_name as author_last_name, u.email as author_email,
-                (SELECT json_agg(sf.*) FROM submission_files sf WHERE sf.submission_id = s.id AND sf.file_type = 'camera_ready') as camera_ready_files
+                (SELECT json_agg(sf.* ORDER BY sf.version DESC) FROM submission_files sf WHERE sf.submission_id = s.id) as files,
+                (SELECT json_agg(sf.* ORDER BY sf.version DESC) FROM submission_files sf WHERE sf.submission_id = s.id AND sf.file_type = 'camera_ready') as camera_ready_files
          FROM submissions s
          LEFT JOIN tracks t ON s.track_id = t.id
          LEFT JOIN users u ON s.corresponding_author_id = u.id

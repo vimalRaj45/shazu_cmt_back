@@ -264,7 +264,16 @@ async function submissionRoutes(fastify, options) {
       }
       const submission = subRes.rows[0];
 
-      const fileType = (data.fields.fileType && data.fields.fileType.value) || 'manuscript';
+      const queryType = request.query && (request.query.fileType || request.query.type);
+      let fileType = queryType || (data.fields && data.fields.fileType && data.fields.fileType.value);
+
+      // If not explicitly provided and submission is already accepted, automatically treat upload as camera_ready
+      if (!fileType) {
+        fileType = (submission.status === 'accepted' || submission.status === 'camera_ready_pending' || submission.status === 'camera_ready_approved')
+          ? 'camera_ready'
+          : 'manuscript';
+      }
+
       const buffer = await data.toBuffer();
       const filename = data.filename;
       const mimeType = data.mimetype;
@@ -295,7 +304,7 @@ async function submissionRoutes(fastify, options) {
 
       // Update submission status if uploading revision or camera-ready
       if (fileType === 'revision') {
-        const rebuttalNotes = (data.fields.rebuttalNotes && data.fields.rebuttalNotes.value) || '';
+        const rebuttalNotes = (data.fields && data.fields.rebuttalNotes && data.fields.rebuttalNotes.value) || '';
         await db.query(
           `UPDATE submissions SET status = 'under_review', rebuttal_notes = COALESCE($1, rebuttal_notes), updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
           [rebuttalNotes || null, id]
