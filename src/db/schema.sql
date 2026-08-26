@@ -1,4 +1,4 @@
--- Shazu Soft Technologies Conference Management Tool (CMT) Database Schema
+-- Shazu Soft Technologies Conference & Journal Management System (CJMS) Database Schema
 
 -- 1. Users Table
 CREATE TABLE IF NOT EXISTS users (

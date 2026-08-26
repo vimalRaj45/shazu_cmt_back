@@ -34,7 +34,7 @@ async function fetchOrcidProfile(rawOrcid) {
     const options = {
       headers: {
         'Accept': 'application/json',
-        'User-Agent': 'ShazuSoft-CMT/1.0 (Conference Management System)',
+        'User-Agent': 'ShazuSoft-CJMS/1.0 (Conference and Journal Management System)',
       },
       timeout: 10000,
     };

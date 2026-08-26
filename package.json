@@ -1,7 +1,7 @@
 {
-  "name": "shazusoft-cmt-backend",
+  "name": "shazusoft-cjms-backend",
   "version": "1.0.0",
-  "description": "Internal Conference Management Tool Backend for Shazu Soft Technologies",
+  "description": "Conference & Journal Management System Backend for Shazu Soft Technologies",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
