@@ -4,6 +4,7 @@ const { authenticate } = require('../middlewares/auth');
 const { sendWelcomeEmail } = require('../services/emailService');
 const { logAudit } = require('../services/auditService');
 const { fetchOrcidProfile, cleanOrcid, isValidOrcid, getOrcidOAuthUrl, exchangeOrcidOAuthCode } = require('../services/orcidService');
+const { verifyTurnstileToken } = require('../services/turnstileService');
 
 async function authRoutes(fastify, options) {
   // Get ORCID OAuth URL
@@ -166,10 +167,18 @@ async function authRoutes(fastify, options) {
       orcidId = '',
       googleScholarUrl = '',
       bio = '',
+      turnstileToken,
+      'cf-turnstile-response': cfTurnstileResponse,
     } = request.body || {};
 
     if (!email || !password || !firstName || !lastName) {
       return reply.code(400).send({ error: 'Email, password, first name and last name are required.' });
+    }
+
+    const tToken = turnstileToken || cfTurnstileResponse || '';
+    const turnstileCheck = await verifyTurnstileToken(tToken, 'signup', request);
+    if (!turnstileCheck.success && !turnstileCheck.bypassed) {
+      return reply.code(403).send({ error: turnstileCheck.error || 'Bot verification failed.' });
     }
 
     const cleanedOrcid = cleanOrcid(orcidId);
@@ -248,11 +257,17 @@ async function authRoutes(fastify, options) {
 
   // Login (Email or ORCID iD + Password)
   fastify.post('/login', async (request, reply) => {
-    const { email, identifier, password } = request.body || {};
+    const { email, identifier, password, turnstileToken, 'cf-turnstile-response': cfTurnstileResponse } = request.body || {};
     const loginIdentifier = (email || identifier || '').trim();
 
     if (!loginIdentifier || !password) {
       return reply.code(400).send({ error: 'Email/ORCID iD and password are required' });
+    }
+
+    const tToken = turnstileToken || cfTurnstileResponse || '';
+    const turnstileCheck = await verifyTurnstileToken(tToken, 'login', request);
+    if (!turnstileCheck.success && !turnstileCheck.bypassed) {
+      return reply.code(403).send({ error: turnstileCheck.error || 'Bot verification failed.' });
     }
 
     try {
