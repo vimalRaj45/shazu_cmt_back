@@ -317,7 +317,7 @@ async function reviewerRoutes(fastify, options) {
       // Update paper status to under_review if submitted
       await db.query(`UPDATE submissions SET status = 'under_review', updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND status = 'submitted'`, [submissionId]);
 
-      // Trigger Brevo email to reviewer
+      // Trigger Hostinger email to reviewer
       sendReviewerInvitation({
         reviewer,
         conference: { id: sub.conference_id, name: sub.conference_name, short_name: sub.conference_short_name, review_deadline: sub.review_deadline },

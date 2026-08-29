@@ -64,7 +64,7 @@ async function emailRoutes(fastify, options) {
         return reply.code(400).send({ error: 'No recipients found for the selected target group.' });
       }
 
-      // Dispatch via Brevo
+      // Dispatch via Hostinger Email
       sendBroadcastAnnouncement({
         recipients,
         conference,
@@ -83,7 +83,7 @@ async function emailRoutes(fastify, options) {
 
       return {
         success: true,
-        message: `Email broadcast queued to ${recipients.length} recipients via Brevo.`,
+        message: `Email broadcast queued to ${recipients.length} recipients via Hostinger Email API.`,
         recipientCount: recipients.length,
       };
     } catch (err) {

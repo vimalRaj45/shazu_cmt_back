@@ -223,7 +223,7 @@ async function submissionRoutes(fastify, options) {
 
       await client.query('COMMIT');
 
-      // Send automated Brevo email confirmation
+      // Send automated Hostinger email confirmation
       sendSubmissionConfirmation({
         user: request.currentUser,
         conference: conf,
