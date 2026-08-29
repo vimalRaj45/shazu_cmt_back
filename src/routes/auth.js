@@ -169,6 +169,9 @@ async function authRoutes(fastify, options) {
       bio = '',
       turnstileToken,
       'cf-turnstile-response': cfTurnstileResponse,
+      referralSource = '',
+      partnerJournal = '',
+      partnerConference = '',
     } = request.body || {};
 
     if (!email || !password || !firstName || !lastName) {
@@ -242,10 +245,17 @@ async function authRoutes(fastify, options) {
 
       await logAudit({
         userId: user.id,
-        action: 'USER_REGISTERED',
+        action: referralSource || partnerJournal || partnerConference ? 'USER_REGISTERED_VIA_EXTERNAL_PARTNER' : 'USER_REGISTERED',
         entityType: 'user',
         entityId: user.id,
-        details: { email: user.email, role: user.role, qualification: user.qualification, domain: user.domain, orcidId: user.orcid_id },
+        details: {
+          email: user.email,
+          role: user.role,
+          qualification: user.qualification,
+          domain: user.domain,
+          orcidId: user.orcid_id,
+          referralSource: referralSource || partnerJournal || partnerConference || null,
+        },
       });
 
       return { user, token };
