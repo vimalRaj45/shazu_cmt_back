@@ -2,7 +2,7 @@
  * Comprehensive API Endpoint Test Suite for Shazu Soft CMT
  * Tests all 40+ API endpoints across Auth, Conferences, Tracks, Submissions,
  * Reviewers, Conflict Checks, Reviews, Decisions, Camera-Ready, Sessions,
- * Announcements, Brevo Emails, Dashboard, Reports, and Audit Logs.
+ * Announcements, Hostinger Emails, Dashboard, Reports, and Audit Logs.
  */
 
 const BASE_URL = process.env.TEST_API_URL || 'http://localhost:5000/api';
@@ -546,8 +546,8 @@ async function runAllTests() {
       }
     }
 
-    // 10. Announcements & Brevo Emails
-    console.log('\n--- 10. Announcements & Brevo Email Logs ---');
+    // 10. Announcements & Hostinger Emails
+    console.log('\n--- 10. Announcements & Hostinger Email Logs ---');
     if (testConferenceId) {
       // Create announcement
       const postAnn = await request('/announcements', {
@@ -579,7 +579,7 @@ async function runAllTests() {
         headers: { Authorization: `Bearer ${chairToken}` },
       });
       if (emailLogs.status === 200 && Array.isArray(emailLogs.data.logs)) {
-        logPass(`GET /api/emails/logs/:confId (Retrieved ${emailLogs.data.logs.length} Brevo email history logs)`);
+        logPass(`GET /api/emails/logs/:confId (Retrieved ${emailLogs.data.logs.length} Hostinger email history logs)`);
       } else {
         logFail('GET /api/emails/logs/:confId', emailLogs);
       }

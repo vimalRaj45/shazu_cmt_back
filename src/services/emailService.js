@@ -2,153 +2,43 @@ require('dotenv').config();
 const db = require('../config/db');
 
 const HOSTINGER_API_KEY = process.env.HOSTINGER_API_KEY;
-const BREVO_API_KEY = process.env.BREVO_API_KEY;
-const SENDER_EMAIL = process.env.HOSTINGER_SENDER_EMAIL || process.env.BREVO_SENDER_EMAIL || 'info@shazusofttechnologies.org';
-const SENDER_NAME = process.env.HOSTINGER_SENDER_NAME || process.env.BREVO_SENDER_NAME || 'Shazu Soft Technologies';
+const SENDER_EMAIL = process.env.HOSTINGER_SENDER_EMAIL || 'info@shazusofttechnologies.org';
+const SENDER_NAME = process.env.HOSTINGER_SENDER_NAME || 'Shazu Soft Technologies';
 
 /**
- * Base method to dispatch transactional emails via Hostinger Mail API (or Brevo API fallback)
+ * Base method to dispatch transactional emails via Hostinger Mail API
  */
 async function sendEmail({ toEmail, toName, subject, htmlContent, templateName = 'custom', conferenceId = null }) {
-  const hostingerKey = process.env.HOSTINGER_API_KEY;
-  const brevoKey = process.env.BREVO_API_KEY;
+  const hostingerKey = process.env.HOSTINGER_API_KEY || HOSTINGER_API_KEY;
 
-  if (!hostingerKey && !brevoKey) {
-    console.warn('[Email Service] No API key configured. Email skipped:', { toEmail, subject });
-    return { success: false, error: 'HOSTINGER_API_KEY or BREVO_API_KEY is not set' };
+  if (!hostingerKey) {
+    console.warn('[Email Service] HOSTINGER_API_KEY is not configured. Email skipped:', { toEmail, subject });
+    return { success: false, error: 'HOSTINGER_API_KEY is not set' };
   }
 
-  // 1. Primary: Hostinger Mail API
-  if (hostingerKey) {
-    const authHeader = hostingerKey.startsWith('Bearer ') ? hostingerKey : `Bearer ${hostingerKey}`;
-    const payload = {
-      from: SENDER_NAME ? `${SENDER_NAME} <${SENDER_EMAIL}>` : SENDER_EMAIL,
-      to: toEmail,
-      subject,
-      html: htmlContent,
-    };
+  const authHeader = hostingerKey.startsWith('Bearer ') ? hostingerKey : `Bearer ${hostingerKey}`;
+  const payload = {
+    from: SENDER_NAME ? `${SENDER_NAME} <${SENDER_EMAIL}>` : SENDER_EMAIL,
+    to: toEmail,
+    subject,
+    html: htmlContent,
+  };
 
-    try {
-      const response = await fetch('https://api.mail.hostinger.com/v1/emails', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'Authorization': authHeader,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        console.error('[Hostinger Email Error]', data);
-        await logEmailRecord({
-          conferenceId,
-          recipientEmail: toEmail,
-          recipientName: toName,
-          subject,
-          templateName,
-          contentPreview: htmlContent.slice(0, 300),
-          status: 'failed',
-          errorMessage: JSON.stringify(data),
-        });
-        return { success: false, error: data };
-      }
-
-      const messageId = data.id || data.messageId || (data.data && data.data.id) || 'sent';
-
-      await logEmailRecord({
-        conferenceId,
-        recipientEmail: toEmail,
-        recipientName: toName,
-        subject,
-        templateName,
-        contentPreview: htmlContent.slice(0, 300),
-        status: 'sent',
-        brevoMessageId: messageId,
-      });
-
-      console.log(`[Hostinger Email Success] Email dispatched to ${toEmail} | ID: ${messageId}`);
-      return { success: true, messageId };
-    } catch (err) {
-      console.error('[Hostinger Email Exception]', err);
-      await logEmailRecord({
-        conferenceId,
-        recipientEmail: toEmail,
-        recipientName: toName,
-        subject,
-        templateName,
-        contentPreview: htmlContent.slice(0, 300),
-        status: 'failed',
-        errorMessage: err.message,
-      });
-      return { success: false, error: err.message };
-    }
-  }
-
-  // 2. Fallback: Brevo API
-  if (brevoKey) {
-    const payload = {
-      sender: {
-        name: SENDER_NAME,
-        email: SENDER_EMAIL,
+  try {
+    const response = await fetch('https://api.mail.hostinger.com/v1/emails', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': authHeader,
       },
-      to: [
-        {
-          email: toEmail,
-          name: toName || toEmail,
-        },
-      ],
-      subject,
-      htmlContent,
-    };
+      body: JSON.stringify(payload),
+    });
 
-    try {
-      const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'api-key': brevoKey,
-        },
-        body: JSON.stringify(payload),
-      });
+    const data = await response.json();
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        console.error('[Brevo Error]', data);
-        await logEmailRecord({
-          conferenceId,
-          recipientEmail: toEmail,
-          recipientName: toName,
-          subject,
-          templateName,
-          contentPreview: htmlContent.slice(0, 300),
-          status: 'failed',
-          errorMessage: JSON.stringify(data),
-        });
-        return { success: false, error: data };
-      }
-
-      const messageId = data.messageId || (data.messageIds && data.messageIds[0]) || 'sent';
-
-      await logEmailRecord({
-        conferenceId,
-        recipientEmail: toEmail,
-        recipientName: toName,
-        subject,
-        templateName,
-        contentPreview: htmlContent.slice(0, 300),
-        status: 'sent',
-        brevoMessageId: messageId,
-      });
-
-      console.log(`[Brevo Success] Email dispatched to ${toEmail} | ID: ${messageId}`);
-      return { success: true, messageId };
-    } catch (err) {
-      console.error('[Brevo Exception]', err);
+    if (!response.ok) {
+      console.error('[Hostinger Email Error]', data);
       await logEmailRecord({
         conferenceId,
         recipientEmail: toEmail,
@@ -157,10 +47,39 @@ async function sendEmail({ toEmail, toName, subject, htmlContent, templateName =
         templateName,
         contentPreview: htmlContent.slice(0, 300),
         status: 'failed',
-        errorMessage: err.message,
+        errorMessage: JSON.stringify(data),
       });
-      return { success: false, error: err.message };
+      return { success: false, error: data };
     }
+
+    const messageId = data.id || data.messageId || (data.data && data.data.id) || 'sent';
+
+    await logEmailRecord({
+      conferenceId,
+      recipientEmail: toEmail,
+      recipientName: toName,
+      subject,
+      templateName,
+      contentPreview: htmlContent.slice(0, 300),
+      status: 'sent',
+      brevoMessageId: messageId,
+    });
+
+    console.log(`[Hostinger Email Success] Email dispatched to ${toEmail} | ID: ${messageId}`);
+    return { success: true, messageId };
+  } catch (err) {
+    console.error('[Hostinger Email Exception]', err);
+    await logEmailRecord({
+      conferenceId,
+      recipientEmail: toEmail,
+      recipientName: toName,
+      subject,
+      templateName,
+      contentPreview: htmlContent.slice(0, 300),
+      status: 'failed',
+      errorMessage: err.message,
+    });
+    return { success: false, error: err.message };
   }
 }
 
