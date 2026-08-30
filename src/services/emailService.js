@@ -1,14 +1,22 @@
-require('dotenv').config();
 const db = require('../config/db');
+
+let hostingerSDK = null;
+try {
+  hostingerSDK = require('hostinger-mail-api-sdk');
+} catch (e) {
+  // SDK optionally loaded if installed
+}
 
 const HOSTINGER_API_KEY = process.env.HOSTINGER_API_KEY;
 const SENDER_EMAIL = process.env.HOSTINGER_SENDER_EMAIL || 'info@shazusofttechnologies.org';
 const SENDER_NAME = process.env.HOSTINGER_SENDER_NAME || 'Shazu Soft Technologies';
 
+let cachedMailboxResourceId = 'AC27733647b7b2b04cefeca882d854';
+
 /**
- * Base method to dispatch transactional emails via Hostinger Mail API
+ * Base method to dispatch transactional emails via Hostinger Mail API SDK
  */
-async function sendEmail({ toEmail, toName, subject, htmlContent, templateName = 'custom', conferenceId = null }) {
+async function sendEmail({ toEmail, toName, subject, htmlContent, textContent = '', templateName = 'custom', conferenceId = null }) {
   const hostingerKey = process.env.HOSTINGER_API_KEY || HOSTINGER_API_KEY;
 
   if (!hostingerKey) {
@@ -16,71 +24,136 @@ async function sendEmail({ toEmail, toName, subject, htmlContent, templateName =
     return { success: false, error: 'HOSTINGER_API_KEY is not set' };
   }
 
-  const authHeader = hostingerKey.startsWith('Bearer ') ? hostingerKey : `Bearer ${hostingerKey}`;
-  const payload = {
-    from: SENDER_NAME ? `${SENDER_NAME} <${SENDER_EMAIL}>` : SENDER_EMAIL,
-    to: toEmail,
-    subject,
-    html: htmlContent,
-  };
+  // 1. Primary: Try Hostinger Mail SDK
+  if (hostingerSDK && hostingerSDK.Configuration && hostingerSDK.SendApi) {
+    try {
+      const config = new hostingerSDK.Configuration({
+        accessToken: hostingerKey,
+        apiKey: hostingerKey,
+      });
 
-  try {
-    const response = await fetch('https://api.mail.hostinger.com/v1/emails', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': authHeader,
-      },
-      body: JSON.stringify(payload),
-    });
+      const sendApi = new hostingerSDK.SendApi(config);
 
-    const data = await response.json();
+      if (!cachedMailboxResourceId && hostingerSDK.AccountApi) {
+        try {
+          const accountApi = new hostingerSDK.AccountApi(config);
+          const accRes = await accountApi.getCurrentAccount();
+          const accData = accRes.data ? accRes.data.data || accRes.data : accRes;
+          if (accData && accData.mailboxes && accData.mailboxes.length > 0) {
+            cachedMailboxResourceId = accData.mailboxes[0].resourceId;
+          }
+        } catch (e) {
+          // ignore lookup warning
+        }
+      }
 
-    if (!response.ok) {
-      console.error('[Hostinger Email Error]', data);
+      const resourceId = cachedMailboxResourceId || 'AC27733647b7b2b04cefeca882d854';
+      const sendRequest = {
+        to: [toEmail],
+        subject: subject || 'Notification',
+        html: htmlContent || `<p>${textContent || subject}</p>`,
+        text: textContent || subject,
+      };
+
+      const response = await sendApi.sendEmail(resourceId, sendRequest);
+      const messageId = response?.data?.id || response?.id || 'sent-sdk';
+
       await logEmailRecord({
         conferenceId,
         recipientEmail: toEmail,
         recipientName: toName,
         subject,
         templateName,
-        contentPreview: htmlContent.slice(0, 300),
-        status: 'failed',
-        errorMessage: JSON.stringify(data),
+        contentPreview: (htmlContent || subject).slice(0, 300),
+        status: 'sent',
+        brevoMessageId: messageId,
       });
-      return { success: false, error: data };
+
+      console.log(`[Hostinger Mail SDK Success] Email dispatched to ${toEmail} | ID: ${messageId}`);
+      return { success: true, messageId, statusCode: response ? response.status || 204 : 204 };
+    } catch (sdkErr) {
+      const errorMsg = sdkErr.response && sdkErr.response.data ? JSON.stringify(sdkErr.response.data) : sdkErr.message;
+      console.warn('[Hostinger Mail SDK Error]:', errorMsg);
     }
-
-    const messageId = data.id || data.messageId || (data.data && data.data.id) || 'sent';
-
-    await logEmailRecord({
-      conferenceId,
-      recipientEmail: toEmail,
-      recipientName: toName,
-      subject,
-      templateName,
-      contentPreview: htmlContent.slice(0, 300),
-      status: 'sent',
-      brevoMessageId: messageId,
-    });
-
-    console.log(`[Hostinger Email Success] Email dispatched to ${toEmail} | ID: ${messageId}`);
-    return { success: true, messageId };
-  } catch (err) {
-    console.error('[Hostinger Email Exception]', err);
-    await logEmailRecord({
-      conferenceId,
-      recipientEmail: toEmail,
-      recipientName: toName,
-      subject,
-      templateName,
-      contentPreview: htmlContent.slice(0, 300),
-      status: 'failed',
-      errorMessage: err.message,
-    });
-    return { success: false, error: err.message };
   }
+
+  // 2. Direct REST API endpoints fallback
+  const authHeader = hostingerKey.startsWith('Bearer ') ? hostingerKey : `Bearer ${hostingerKey}`;
+  const payload = {
+    from: SENDER_NAME ? `${SENDER_NAME} <${SENDER_EMAIL}>` : SENDER_EMAIL,
+    to: [toEmail],
+    subject,
+    html: htmlContent,
+  };
+
+  const HOSTINGER_ENDPOINTS = [
+    'https://api.mail.hostinger.com/api/v1/send',
+    'https://api.mail.hostinger.com/api/v1/emails',
+    'https://api.mail.hostinger.com/v1/send',
+    'https://api.hostinger.com/v1/email/send',
+    'https://api.hostinger.com/v1/emails',
+  ];
+
+  let lastError = null;
+
+  for (const endpoint of HOSTINGER_ENDPOINTS) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Authorization': authHeader,
+          'x-api-key': hostingerKey,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const text = await response.text();
+      let data = {};
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        data = { raw: text };
+      }
+
+      if (response.ok) {
+        const messageId = data.id || data.messageId || (data.data && data.data.id) || 'sent';
+
+        await logEmailRecord({
+          conferenceId,
+          recipientEmail: toEmail,
+          recipientName: toName,
+          subject,
+          templateName,
+          contentPreview: htmlContent.slice(0, 300),
+          status: 'sent',
+          brevoMessageId: messageId,
+        });
+
+        console.log(`[Hostinger Email Success] Email dispatched to ${toEmail} via ${endpoint} | ID: ${messageId}`);
+        return { success: true, messageId };
+      } else {
+        lastError = data;
+      }
+    } catch (err) {
+      lastError = err.message;
+    }
+  }
+
+  console.error('[Hostinger Email Error]', lastError);
+  await logEmailRecord({
+    conferenceId,
+    recipientEmail: toEmail,
+    recipientName: toName,
+    subject,
+    templateName,
+    contentPreview: htmlContent.slice(0, 300),
+    status: 'failed',
+    errorMessage: typeof lastError === 'object' ? JSON.stringify(lastError) : String(lastError),
+  });
+
+  return { success: false, error: lastError };
 }
 
 /**
