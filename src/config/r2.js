@@ -58,11 +58,27 @@ async function deleteFromR2(key) {
   return await r2Client.send(command);
 }
 
+/**
+ * Get an object as a Buffer from R2
+ */
+async function getObjectBuffer(key) {
+  const command = new GetObjectCommand({
+    Bucket: BUCKET_NAME,
+    Key: key,
+  });
+  const response = await r2Client.send(command);
+  const byteArray = await response.Body.transformToByteArray();
+  return Buffer.from(byteArray);
+}
+
 module.exports = {
   r2Client,
   uploadToR2,
   getDownloadPresignedUrl,
   deleteFromR2,
+  getObjectBuffer,
   BUCKET_NAME,
   PUBLIC_BASE_URL,
 };
+
+

@@ -1,7 +1,8 @@
 const path = require('path');
+const archiver = require('archiver');
 const db = require('../config/db');
 const { authenticate, requireRoles } = require('../middlewares/auth');
-const { uploadToR2, getDownloadPresignedUrl } = require('../config/r2');
+const { uploadToR2, getDownloadPresignedUrl, deleteFromR2, getObjectBuffer } = require('../config/r2');
 const { sendSubmissionConfirmation } = require('../services/emailService');
 const { logAudit } = require('../services/auditService');
 
@@ -367,32 +368,167 @@ async function submissionRoutes(fastify, options) {
     }
   });
 
-  // Update submission metadata (Title, Abstract, Keywords, Track)
-  fastify.put('/:id', { preHandler: [authenticate] }, async (request, reply) => {
-    const { id } = request.params;
-    const { title, abstract, keywords, trackId, status } = request.body || {};
-
+  // Delete a submission file (Admin / Chair / File Owner)
+  fastify.delete('/files/:fileId', { preHandler: [authenticate] }, async (request, reply) => {
+    const { fileId } = request.params;
     try {
-      const res = await db.query(
-        `UPDATE submissions SET
-            title = COALESCE($1, title),
-            abstract = COALESCE($2, abstract),
-            keywords = COALESCE($3, keywords),
-            track_id = COALESCE($4, track_id),
-            status = COALESCE($5, status),
-            updated_at = CURRENT_TIMESTAMP
-         WHERE id = $6
-         RETURNING *;`,
-        [title, abstract, keywords, trackId, status, id]
+      const fileRes = await db.query(
+        `SELECT sf.*, s.conference_id, s.corresponding_author_id, s.submission_number
+         FROM submission_files sf
+         JOIN submissions s ON sf.submission_id = s.id
+         WHERE sf.id = $1`,
+        [fileId]
       );
 
-      if (res.rows.length === 0) {
-        return reply.code(404).send({ error: 'Submission not found' });
+      if (fileRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'File not found' });
       }
 
-      return { submission: res.rows[0] };
+      const file = fileRes.rows[0];
+      const isPrivileged = request.currentUser.role === 'admin' || request.currentUser.role === 'chair';
+      const isOwner = request.currentUser.id === file.uploaded_by || request.currentUser.id === file.corresponding_author_id;
+
+      if (!isPrivileged && !isOwner) {
+        return reply.code(403).send({ error: 'You do not have permission to delete this file' });
+      }
+
+      // 1. Delete from R2 bucket
+      if (file.s3_key) {
+        try {
+          await deleteFromR2(file.s3_key);
+        } catch (r2Err) {
+          request.log.warn(`Failed to delete object from R2 (${file.s3_key}): ${r2Err.message}`);
+        }
+      }
+
+      // 2. Delete from DB
+      await db.query('DELETE FROM submission_files WHERE id = $1', [fileId]);
+
+      // 3. Audit log
+      await logAudit({
+        conferenceId: file.conference_id,
+        userId: request.currentUser.id,
+        action: 'FILE_DELETED',
+        entityType: 'submission_file',
+        entityId: fileId,
+        details: { submissionId: file.submission_id, submissionNumber: file.submission_number, fileName: file.file_name },
+      });
+
+      return { message: 'File deleted successfully', fileId };
     } catch (err) {
-      return reply.code(500).send({ error: 'Failed to update submission', details: err.message });
+      return reply.code(500).send({ error: 'Failed to delete file', details: err.message });
+    }
+  });
+
+  // Download all files as a ZIP archive (Chair/Admin)
+  fastify.get('/conference/:conferenceId/download-zip', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
+    const { conferenceId } = request.params;
+    const { fileType, trackId, status } = request.query || {};
+
+    try {
+      let query = `
+        SELECT sf.*, s.submission_number, s.title, c.short_name as conference_short_name
+        FROM submission_files sf
+        JOIN submissions s ON sf.submission_id = s.id
+        JOIN conferences c ON s.conference_id = c.id
+        WHERE s.conference_id = $1
+      `;
+      const params = [conferenceId];
+
+      if (fileType && fileType !== 'all') {
+        params.push(fileType);
+        query += ` AND sf.file_type = $${params.length}`;
+      }
+
+      if (trackId) {
+        params.push(trackId);
+        query += ` AND s.track_id = $${params.length}`;
+      }
+
+      if (status) {
+        params.push(status);
+        query += ` AND s.status = $${params.length}`;
+      }
+
+      query += ` ORDER BY s.submission_number ASC, sf.version DESC`;
+
+      const filesRes = await db.query(query, params);
+      if (filesRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'No files found matching the criteria to download' });
+      }
+
+      const confCode = (filesRes.rows[0].conference_short_name || 'CONF').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const zipFilename = `${confCode}_Submissions_Backup_${new Date().toISOString().slice(0, 10)}.zip`;
+
+      const archive = archiver('zip', { zlib: { level: 6 } });
+
+      reply.header('Content-Type', 'application/zip');
+      reply.header('Content-Disposition', `attachment; filename="${zipFilename}"`);
+
+      // Pipe archive to response stream
+      reply.send(archive);
+
+      for (const f of filesRes.rows) {
+        try {
+          const buffer = await getObjectBuffer(f.s3_key);
+          const subFolder = f.submission_number ? f.submission_number.replace(/[^a-zA-Z0-9_-]/g, '_') : `SUB_${f.submission_id}`;
+          const cleanName = f.file_name ? f.file_name.replace(/[^a-zA-Z0-9._-]/g, '_') : `file_${f.id}.pdf`;
+          archive.append(buffer, { name: `${subFolder}/${cleanName}` });
+        } catch (fileErr) {
+          request.log.error(`[ZIP Warning] Failed to add file ${f.id} (${f.s3_key}): ${fileErr.message}`);
+        }
+      }
+
+      await archive.finalize();
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({ error: 'Failed to generate ZIP archive', details: err.message });
+    }
+  });
+
+  // Bulk Delete Submission Files (Admin / Chair)
+  fastify.post('/conference/:conferenceId/bulk-delete-files', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
+    const { conferenceId } = request.params;
+    const { fileIds } = request.body || {};
+
+    if (!Array.isArray(fileIds) || fileIds.length === 0) {
+      return reply.code(400).send({ error: 'Please provide an array of fileIds to delete' });
+    }
+
+    try {
+      const filesRes = await db.query(
+        `SELECT sf.id, sf.s3_key, sf.file_name, sf.submission_id, s.conference_id, s.submission_number
+         FROM submission_files sf
+         JOIN submissions s ON sf.submission_id = s.id
+         WHERE sf.id = ANY($1::int[]) AND s.conference_id = $2`,
+        [fileIds, conferenceId]
+      );
+
+      let deletedCount = 0;
+      for (const f of filesRes.rows) {
+        if (f.s3_key) {
+          try {
+            await deleteFromR2(f.s3_key);
+          } catch (r2Err) {
+            request.log.warn(`Failed to delete R2 object (${f.s3_key}): ${r2Err.message}`);
+          }
+        }
+        await db.query('DELETE FROM submission_files WHERE id = $1', [f.id]);
+        deletedCount++;
+      }
+
+      await logAudit({
+        conferenceId,
+        userId: request.currentUser.id,
+        action: 'BULK_FILES_DELETED',
+        entityType: 'submission_file',
+        entityId: null,
+        details: { deletedCount, fileIds },
+      });
+
+      return { message: `Successfully deleted ${deletedCount} files`, deletedCount };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed to bulk delete files', details: err.message });
     }
   });
 }
