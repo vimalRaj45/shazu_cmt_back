@@ -346,7 +346,30 @@ async function submissionRoutes(fastify, options) {
     }
   });
 
-  // Get download presigned URL for a file
+  // Get download presigned URL / file details
+  fastify.get('/files/:fileId', { preHandler: [authenticate] }, async (request, reply) => {
+    const { fileId } = request.params;
+    try {
+      const fileRes = await db.query('SELECT * FROM submission_files WHERE id = $1', [fileId]);
+      if (fileRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'File not found' });
+      }
+
+      const file = fileRes.rows[0];
+      const downloadUrl = await getDownloadPresignedUrl(file.s3_key);
+
+      return {
+        file,
+        downloadUrl,
+        publicUrl: file.public_url,
+        fileName: file.file_name,
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed to generate download URL', details: err.message });
+    }
+  });
+
+  // Get download presigned URL for a file (legacy alias)
   fastify.get('/files/:fileId/download', { preHandler: [authenticate] }, async (request, reply) => {
     const { fileId } = request.params;
     try {
@@ -371,17 +394,22 @@ async function submissionRoutes(fastify, options) {
   // Delete a submission file (Admin / Chair / File Owner)
   fastify.delete('/files/:fileId', { preHandler: [authenticate] }, async (request, reply) => {
     const { fileId } = request.params;
+    const idNum = parseInt(fileId, 10);
+    if (isNaN(idNum)) {
+      return reply.code(400).send({ error: 'Invalid file ID' });
+    }
+
     try {
       const fileRes = await db.query(
         `SELECT sf.*, s.conference_id, s.corresponding_author_id, s.submission_number
          FROM submission_files sf
          JOIN submissions s ON sf.submission_id = s.id
          WHERE sf.id = $1`,
-        [fileId]
+        [idNum]
       );
 
       if (fileRes.rows.length === 0) {
-        return reply.code(404).send({ error: 'File not found' });
+        return reply.code(404).send({ error: 'File not found in database or already deleted' });
       }
 
       const file = fileRes.rows[0];
@@ -402,7 +430,7 @@ async function submissionRoutes(fastify, options) {
       }
 
       // 2. Delete from DB
-      await db.query('DELETE FROM submission_files WHERE id = $1', [fileId]);
+      await db.query('DELETE FROM submission_files WHERE id = $1', [idNum]);
 
       // 3. Audit log
       await logAudit({
@@ -410,11 +438,11 @@ async function submissionRoutes(fastify, options) {
         userId: request.currentUser.id,
         action: 'FILE_DELETED',
         entityType: 'submission_file',
-        entityId: fileId,
+        entityId: idNum,
         details: { submissionId: file.submission_id, submissionNumber: file.submission_number, fileName: file.file_name },
       });
 
-      return { message: 'File deleted successfully', fileId };
+      return { message: 'File deleted successfully', fileId: idNum };
     } catch (err) {
       return reply.code(500).send({ error: 'Failed to delete file', details: err.message });
     }
