@@ -316,8 +316,22 @@ async function sendDecisionNotification({ author, conference, submission, decisi
       <p style="margin: 0 0 8px 0;"><strong>Decision:</strong> <span style="color: ${decisionBadgeColor}; font-weight: bold;">${statusText}</span></p>
       ${decisionNotes ? `<p style="margin: 8px 0 0 0;"><strong>Chair Feedback:</strong><br>${decisionNotes}</p>` : ''}
     </div>
-    ${decision === 'accepted' ? `<p><strong>Next Step:</strong> Please prepare and upload your Camera-Ready paper before the deadline: ${conference.camera_ready_deadline ? new Date(conference.camera_ready_deadline).toLocaleDateString() : 'See portal'}.</p>` : ''}
-    ${decision === 'revision_required' ? `<p><strong>Next Step:</strong> Please address reviewer remarks and submit your revised manuscript via the portal.</p>` : ''}
+    ${decision === 'accepted' ? `
+      <div style="background: #ebf8fa; border: 1px dashed #319795; border-radius: 6px; padding: 12px; margin: 15px 0;">
+        <p style="margin: 0 0 6px 0; font-weight: bold; color: #234e52;">📄 Recommended File Naming Format for Camera-Ready:</p>
+        <p style="margin: 0; font-family: monospace; font-size: 13px; color: #285e61;">${(conference.short_name || 'CONF').replace(/\s+/g, '_')}_${submission.submission_number}_CameraReady.pdf</p>
+        <p style="margin: 6px 0 0 0; font-size: 12px; color: #4a5568;"><em>*Please avoid spaces or special characters in filenames for seamless indexing.</em></p>
+      </div>
+      <p><strong>Next Step:</strong> Please prepare and upload your Camera-Ready paper before the deadline: ${conference.camera_ready_deadline ? new Date(conference.camera_ready_deadline).toLocaleDateString() : 'See portal'}.</p>
+    ` : ''}
+    ${decision === 'revision_required' ? `
+      <div style="background: #fffaf0; border: 1px dashed #dd6b20; border-radius: 6px; padding: 12px; margin: 15px 0;">
+        <p style="margin: 0 0 6px 0; font-weight: bold; color: #7b341e;">📄 Recommended File Naming Format for Revision:</p>
+        <p style="margin: 0; font-family: monospace; font-size: 13px; color: #9c4221;">${(conference.short_name || 'CONF').replace(/\s+/g, '_')}_${submission.submission_number}_Revision.pdf</p>
+        <p style="margin: 6px 0 0 0; font-size: 12px; color: #4a5568;"><em>*Please avoid spaces or special characters in filenames for seamless tracking.</em></p>
+      </div>
+      <p><strong>Next Step:</strong> Please address reviewer remarks and submit your revised manuscript via the portal.</p>
+    ` : ''}
     `
   );
 
@@ -396,7 +410,14 @@ async function sendCameraReadyStatusEmail({ author, conference, submission, stat
            <p>Thank you for your valuable contribution to <strong>${conference.name}</strong>.</p>`
         : isRejected
         ? `<p>The program committee has reviewed your camera-ready submission and regrets to inform you that it has been rejected and will not be included in the final proceedings.</p>`
-        : `<p><strong>Next Step:</strong> Please review the committee's remarks above, apply the requested formatting or content adjustments, and upload your revised camera-ready PDF via the author portal as soon as possible.</p>`
+        : `
+          <div style="background: #fffaf0; border: 1px dashed #dd6b20; border-radius: 6px; padding: 12px; margin: 15px 0;">
+            <p style="margin: 0 0 6px 0; font-weight: bold; color: #7b341e;">📄 Recommended File Naming Format for Corrected Copy:</p>
+            <p style="margin: 0; font-family: monospace; font-size: 13px; color: #9c4221;">${(conference.short_name || 'CONF').replace(/\s+/g, '_')}_${submission.submission_number}_CameraReady.pdf</p>
+            <p style="margin: 6px 0 0 0; font-size: 12px; color: #4a5568;"><em>*Please ensure no spaces or special characters are present in the filename.</em></p>
+          </div>
+          <p><strong>Next Step:</strong> Please review the committee's remarks above, apply the requested formatting or content adjustments, and upload your revised camera-ready PDF via the author portal as soon as possible.</p>
+        `
     }
     `
   );

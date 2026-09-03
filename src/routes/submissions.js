@@ -1,3 +1,4 @@
+const path = require('path');
 const db = require('../config/db');
 const { authenticate, requireRoles } = require('../middlewares/auth');
 const { uploadToR2, getDownloadPresignedUrl } = require('../config/r2');
@@ -258,7 +259,13 @@ async function submissionRoutes(fastify, options) {
     }
 
     try {
-      const subRes = await db.query('SELECT * FROM submissions WHERE id = $1', [id]);
+      const subRes = await db.query(
+        `SELECT s.*, c.short_name as conference_short_name
+         FROM submissions s
+         LEFT JOIN conferences c ON s.conference_id = c.id
+         WHERE s.id = $1`,
+        [id]
+      );
       if (subRes.rows.length === 0) {
         return reply.code(404).send({ error: 'Submission not found' });
       }
@@ -275,31 +282,40 @@ async function submissionRoutes(fastify, options) {
       }
 
       const buffer = await data.toBuffer();
-      const filename = data.filename;
+      const originalFilename = data.filename || 'manuscript.pdf';
       const mimeType = data.mimetype;
       const fileSize = buffer.length;
 
-      // Unique storage key
-      const timestamp = Date.now();
-      const sanitizedName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const s3Key = `conferences/${submission.conference_id}/submissions/${submission.submission_number}/${fileType}_${timestamp}_${sanitizedName}`;
-
-      // Upload to Cloudflare R2
-      const r2Result = await uploadToR2(s3Key, buffer, mimeType);
-
-      // Get current version count for this file type
+      // Get current version count for this file type to assign next version
       const verRes = await db.query(
         'SELECT COUNT(*) FROM submission_files WHERE submission_id = $1 AND file_type = $2',
         [id, fileType]
       );
       const nextVersion = parseInt(verRes.rows[0].count, 10) + 1;
 
-      // Record in DB
+      // Build standardized, space-free file name
+      const ext = path.extname(originalFilename) || '.pdf';
+      const confCode = (submission.conference_short_name || 'CONF').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const subCode = (submission.submission_number || `SUB-${submission.id}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const typeLabel = fileType === 'camera_ready' ? 'CameraReady' : fileType === 'revision' ? 'Revision' : fileType === 'supplementary' ? 'Supplementary' : 'Manuscript';
+      
+      // Standardized display name e.g. "ICACIT-2026_CMT-2026-00101_Revision_v2.pdf"
+      const standardizedFilename = `${confCode}_${subCode}_${typeLabel}_v${nextVersion}${ext}`;
+
+      // Clean original filename without spaces for S3 storage safety
+      const cleanOriginal = originalFilename.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/_+/g, '_');
+      const timestamp = Date.now();
+      const s3Key = `conferences/${submission.conference_id}/submissions/${subCode}/${fileType}_v${nextVersion}_${timestamp}_${cleanOriginal}`;
+
+      // Upload to Cloudflare R2
+      const r2Result = await uploadToR2(s3Key, buffer, mimeType);
+
+      // Record in DB with the clean standardized filename
       const fileRecordRes = await db.query(
         `INSERT INTO submission_files (submission_id, file_type, file_name, file_size, mime_type, s3_key, public_url, version, uploaded_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING *;`,
-        [id, fileType, filename, fileSize, mimeType, s3Key, r2Result.publicUrl, nextVersion, request.currentUser.id]
+        [id, fileType, standardizedFilename, fileSize, mimeType, s3Key, r2Result.publicUrl, nextVersion, request.currentUser.id]
       );
 
       // Update submission status if uploading revision or camera-ready
@@ -319,7 +335,7 @@ async function submissionRoutes(fastify, options) {
         action: 'FILE_UPLOADED',
         entityType: 'submission_file',
         entityId: fileRecordRes.rows[0].id,
-        details: { submissionId: id, fileType, filename, size: fileSize },
+        details: { submissionId: id, fileType, filename: standardizedFilename, originalFilename, size: fileSize },
       });
 
       return { file: fileRecordRes.rows[0] };
