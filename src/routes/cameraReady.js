@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const { authenticate, requireRoles } = require('../middlewares/auth');
 const { logAudit } = require('../services/auditService');
+const { sendCameraReadyStatusEmail } = require('../services/emailService');
 
 async function cameraReadyRoutes(fastify, options) {
   // Get camera-ready submissions for a conference (Chair/Admin)
@@ -31,7 +32,7 @@ async function cameraReadyRoutes(fastify, options) {
     const { submissionId } = request.params;
     const { status, remarks } = request.body || {}; // 'camera_ready_approved' or 'revision_required'
 
-    if (!['camera_ready_approved', 'revision_required', 'camera_ready_pending'].includes(status)) {
+    if (!['camera_ready_approved', 'revision_required', 'rejected', 'camera_ready_rejected', 'camera_ready_pending'].includes(status)) {
       return reply.code(400).send({ error: 'Invalid camera-ready status' });
     }
 
@@ -55,6 +56,48 @@ async function cameraReadyRoutes(fastify, options) {
         entityId: submissionId,
         details: { status, remarks },
       });
+
+      // Send email notification to corresponding author
+      if (status === 'camera_ready_approved' || status === 'revision_required') {
+        try {
+          const detailRes = await db.query(
+            `SELECT s.title, s.submission_number, 
+                    u.email as author_email, u.first_name as author_first_name, u.last_name as author_last_name,
+                    c.id as conference_id, c.name as conference_name, c.short_name as conference_short_name
+             FROM submissions s
+             JOIN users u ON s.corresponding_author_id = u.id
+             JOIN conferences c ON s.conference_id = c.id
+             WHERE s.id = $1`,
+            [submissionId]
+          );
+
+          if (detailRes.rows.length > 0) {
+            const d = detailRes.rows[0];
+            sendCameraReadyStatusEmail({
+              author: {
+                email: d.author_email,
+                first_name: d.author_first_name,
+                last_name: d.author_last_name,
+              },
+              conference: {
+                id: d.conference_id,
+                name: d.conference_name,
+                short_name: d.conference_short_name,
+              },
+              submission: {
+                submission_number: d.submission_number,
+                title: d.title,
+              },
+              status,
+              remarks,
+            }).catch((emailErr) => {
+              request.log.error(`[CameraReady Email Error]: ${emailErr.message}`);
+            });
+          }
+        } catch (fetchErr) {
+          request.log.error(`[CameraReady Fetch Author Detail Error]: ${fetchErr.message}`);
+        }
+      }
 
       return {
         submission: sub,

@@ -11,7 +11,7 @@ const HOSTINGER_API_KEY = process.env.HOSTINGER_API_KEY;
 const SENDER_EMAIL = process.env.HOSTINGER_SENDER_EMAIL || 'info@shazusofttechnologies.org';
 const SENDER_NAME = process.env.HOSTINGER_SENDER_NAME || 'Shazu Soft Technologies';
 
-let cachedMailboxResourceId = 'AC27733647b7b2b04cefeca882d854';
+let cachedMailboxResourceId = null;
 
 /**
  * Base method to dispatch transactional emails via Hostinger Mail API SDK
@@ -39,8 +39,17 @@ async function sendEmail({ toEmail, toName, subject, htmlContent, textContent = 
           const accountApi = new hostingerSDK.AccountApi(config);
           const accRes = await accountApi.getCurrentAccount();
           const accData = accRes.data ? accRes.data.data || accRes.data : accRes;
-          if (accData && accData.mailboxes && accData.mailboxes.length > 0) {
-            cachedMailboxResourceId = accData.mailboxes[0].resourceId;
+          const mailboxes = accData.mailboxes || (Array.isArray(accData) ? accData : []);
+          
+          const targetAddr = SENDER_EMAIL.toLowerCase().trim();
+          const matchedMb = mailboxes.find(
+            (mb) => (mb.email && mb.email.toLowerCase().trim() === targetAddr) || (mb.address && mb.address.toLowerCase().trim() === targetAddr)
+          );
+
+          if (matchedMb) {
+            cachedMailboxResourceId = matchedMb.resourceId || matchedMb.id;
+          } else if (mailboxes.length > 0) {
+            cachedMailboxResourceId = mailboxes[0].resourceId || mailboxes[0].id;
           }
         } catch (e) {
           // ignore lookup warning
@@ -49,6 +58,7 @@ async function sendEmail({ toEmail, toName, subject, htmlContent, textContent = 
 
       const resourceId = cachedMailboxResourceId || 'AC27733647b7b2b04cefeca882d854';
       const sendRequest = {
+        from: SENDER_NAME ? `${SENDER_NAME} <${SENDER_EMAIL}>` : SENDER_EMAIL,
         to: [toEmail],
         subject: subject || 'Notification',
         html: htmlContent || `<p>${textContent || subject}</p>`,
@@ -350,6 +360,57 @@ async function sendBroadcastAnnouncement({ recipients, conference, title, conten
   return results;
 }
 
+// 6. Camera-Ready Status Notification (Approved, Revision/Correction Requested, or Rejected)
+async function sendCameraReadyStatusEmail({ author, conference, submission, status, remarks }) {
+  const isApproved = status === 'camera_ready_approved';
+  const isRejected = status === 'rejected' || status === 'camera_ready_rejected';
+  
+  let badgeColor = '#38a169'; // green for approved
+  let statusText = 'CAMERA-READY APPROVED';
+  let templateName = 'camera_ready_approved';
+
+  if (isRejected) {
+    badgeColor = '#e53e3e'; // red for reject
+    statusText = 'CAMERA-READY REJECTED';
+    templateName = 'camera_ready_rejected';
+  } else if (!isApproved) {
+    badgeColor = '#d69e2e'; // amber for correction requested
+    statusText = 'CORRECTION REQUIRED';
+    templateName = 'camera_ready_revision_required';
+  }
+
+  const html = wrapHtml(
+    `Camera-Ready Status: ${statusText}`,
+    `
+    <h3>Dear ${author.first_name} ${author.last_name},</h3>
+    <p>We are writing to update you on the status of your Camera-Ready manuscript for <strong>${conference.name} (${conference.short_name})</strong>.</p>
+    <div style="background: #f7fafc; border-left: 4px solid ${badgeColor}; padding: 16px; margin: 15px 0;">
+      <p style="margin: 0 0 8px 0;"><strong>Submission ID:</strong> ${submission.submission_number}</p>
+      <p style="margin: 0 0 8px 0;"><strong>Title:</strong> ${submission.title}</p>
+      <p style="margin: 0 0 8px 0;"><strong>Status:</strong> <span style="color: ${badgeColor}; font-weight: bold;">${statusText}</span></p>
+      ${remarks ? `<p style="margin: 8px 0 0 0;"><strong>Committee Remarks / Notes:</strong><br>${remarks}</p>` : ''}
+    </div>
+    ${
+      isApproved
+        ? `<p>Your camera-ready manuscript has been verified and approved. It is now finalized and locked for publication in the official proceedings and presentation sessions.</p>
+           <p>Thank you for your valuable contribution to <strong>${conference.name}</strong>.</p>`
+        : isRejected
+        ? `<p>The program committee has reviewed your camera-ready submission and regrets to inform you that it has been rejected and will not be included in the final proceedings.</p>`
+        : `<p><strong>Next Step:</strong> Please review the committee's remarks above, apply the requested formatting or content adjustments, and upload your revised camera-ready PDF via the author portal as soon as possible.</p>`
+    }
+    `
+  );
+
+  return sendEmail({
+    toEmail: author.email,
+    toName: `${author.first_name} ${author.last_name}`,
+    subject: `[${conference.short_name}] Camera-Ready Status: ${statusText} (Paper #${submission.submission_number})`,
+    htmlContent: html,
+    templateName,
+    conferenceId: conference.id,
+  });
+}
+
 module.exports = {
   sendEmail,
   sendWelcomeEmail,
@@ -357,4 +418,6 @@ module.exports = {
   sendReviewerInvitation,
   sendDecisionNotification,
   sendBroadcastAnnouncement,
+  sendCameraReadyStatusEmail,
 };
+
