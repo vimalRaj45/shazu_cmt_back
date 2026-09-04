@@ -245,6 +245,9 @@ async function submissionRoutes(fastify, options) {
     } catch (err) {
       await client.query('ROLLBACK');
       return reply.code(500).send({ error: 'Failed to create submission', details: err.message });
+    } finally {
+      client.release();
+    }
   });
 
   // Update/Edit Paper Submission (Author / Chair / Admin)
