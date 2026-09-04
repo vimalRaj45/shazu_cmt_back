@@ -239,6 +239,49 @@ async function conferenceRoutes(fastify, options) {
       return reply.code(500).send({ error: 'Failed to update conference', details: err.message });
     }
   });
+
+  // Delete conference (Admin only)
+  fastify.delete('/:id', { preHandler: [authenticate, requireRoles('admin')] }, async (request, reply) => {
+    const { id } = request.params;
+    const client = await db.getClient();
+    try {
+      const confRes = await client.query('SELECT * FROM conferences WHERE id = $1', [id]);
+      if (confRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'Conference not found' });
+      }
+
+      const conf = confRes.rows[0];
+
+      // Check if active submissions exist
+      const subRes = await client.query('SELECT COUNT(*) FROM submissions WHERE conference_id = $1', [id]);
+      const subCount = parseInt(subRes.rows[0].count, 10);
+      if (subCount > 0) {
+        return reply.code(400).send({
+          error: `Cannot delete conference with ${subCount} existing paper submissions. Please archive or set status to 'completed' instead.`,
+        });
+      }
+
+      await client.query('BEGIN');
+      await client.query('DELETE FROM conferences WHERE id = $1', [id]);
+      await client.query('COMMIT');
+
+      await logAudit({
+        conferenceId: null,
+        userId: request.currentUser.id,
+        action: 'ADMIN_DELETED_CONFERENCE',
+        entityType: 'conference',
+        entityId: id,
+        details: { conferenceName: conf.name, shortName: conf.short_name },
+      });
+
+      return { message: 'Conference deleted successfully', id };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      return reply.code(500).send({ error: 'Failed to delete conference', details: err.message });
+    } finally {
+      client.release();
+    }
+  });
 }
 
 module.exports = conferenceRoutes;

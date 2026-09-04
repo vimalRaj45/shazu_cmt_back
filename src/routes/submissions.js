@@ -245,8 +245,206 @@ async function submissionRoutes(fastify, options) {
     } catch (err) {
       await client.query('ROLLBACK');
       return reply.code(500).send({ error: 'Failed to create submission', details: err.message });
+  });
+
+  // Update/Edit Paper Submission (Author / Chair / Admin)
+  fastify.put('/:id', { preHandler: [authenticate] }, async (request, reply) => {
+    const { id } = request.params;
+    const {
+      title,
+      abstract,
+      keywords,
+      trackId,
+      authors,
+    } = request.body || {};
+
+    const userId = request.currentUser.id;
+    const userRole = request.currentUser.role;
+
+    const client = await db.getClient();
+    try {
+      const subRes = await client.query('SELECT * FROM submissions WHERE id = $1', [id]);
+      if (subRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'Submission not found' });
+      }
+
+      const submission = subRes.rows[0];
+      const isOwner = submission.corresponding_author_id === userId;
+      const isPrivileged = userRole === 'admin' || userRole === 'chair';
+
+      if (!isOwner && !isPrivileged) {
+        return reply.code(403).send({ error: 'You are not authorized to update this submission' });
+      }
+
+      // Check editable status for regular authors
+      if (!isPrivileged && ['accepted', 'rejected', 'camera_ready_approved'].includes(submission.status)) {
+        return reply.code(400).send({ error: `Cannot edit submission after it has been ${submission.status.replace(/_/g, ' ')}` });
+      }
+
+      await client.query('BEGIN');
+
+      const updatedSubRes = await client.query(
+        `UPDATE submissions SET
+            title = COALESCE($1, title),
+            abstract = COALESCE($2, abstract),
+            keywords = COALESCE($3, keywords),
+            track_id = COALESCE($4, track_id),
+            updated_at = CURRENT_TIMESTAMP
+         WHERE id = $5
+         RETURNING *;`,
+        [
+          title ? title.trim() : null,
+          abstract ? abstract.trim() : null,
+          Array.isArray(keywords) ? keywords : null,
+          trackId !== undefined ? trackId : null,
+          id,
+        ]
+      );
+
+      // If authors array provided, replace/synchronize authors
+      if (Array.isArray(authors) && authors.length > 0) {
+        await client.query('DELETE FROM submission_authors WHERE submission_id = $1', [id]);
+        for (let i = 0; i < authors.length; i++) {
+          const a = authors[i];
+          await client.query(
+            `INSERT INTO submission_authors (submission_id, name, email, institution, department, country, is_primary, is_corresponding, author_order)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`,
+            [
+              id,
+              a.name || `${request.currentUser.first_name} ${request.currentUser.last_name}`,
+              a.email || request.currentUser.email,
+              a.institution || '',
+              a.department || '',
+              a.country || '',
+              a.is_primary !== undefined ? a.is_primary : (i === 0),
+              a.is_corresponding !== undefined ? a.is_corresponding : (i === 0),
+              a.author_order || (i + 1),
+            ]
+          );
+        }
+      }
+
+      await client.query('COMMIT');
+
+      // Fetch updated authors
+      const authorsRes = await db.query('SELECT * FROM submission_authors WHERE submission_id = $1 ORDER BY author_order ASC', [id]);
+      const updatedSubmission = updatedSubRes.rows[0];
+      updatedSubmission.authors = authorsRes.rows;
+
+      await logAudit({
+        conferenceId: submission.conference_id,
+        userId: request.currentUser.id,
+        action: 'SUBMISSION_UPDATED',
+        entityType: 'submission',
+        entityId: id,
+        details: { title: updatedSubmission.title, submissionNumber: submission.submission_number },
+      });
+
+      return { submission: updatedSubmission };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      return reply.code(500).send({ error: 'Failed to update submission', details: err.message });
     } finally {
       client.release();
+    }
+  });
+
+  // Delete or Withdraw Paper Submission (Author / Admin / Chair)
+  fastify.delete('/:id', { preHandler: [authenticate] }, async (request, reply) => {
+    const { id } = request.params;
+    const userId = request.currentUser.id;
+    const userRole = request.currentUser.role;
+
+    const client = await db.getClient();
+    try {
+      const subRes = await client.query('SELECT * FROM submissions WHERE id = $1', [id]);
+      if (subRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'Submission not found' });
+      }
+
+      const submission = subRes.rows[0];
+      const isOwner = submission.corresponding_author_id === userId;
+      const isPrivileged = userRole === 'admin' || userRole === 'chair';
+
+      if (!isOwner && !isPrivileged) {
+        return reply.code(403).send({ error: 'You are not authorized to delete this submission' });
+      }
+
+      // If regular author, verify not in finalized status
+      if (!isPrivileged && ['accepted', 'camera_ready_approved'].includes(submission.status)) {
+        return reply.code(400).send({ error: 'Cannot delete paper that has already been accepted.' });
+      }
+
+      // Fetch all files to delete from R2
+      const filesRes = await client.query('SELECT * FROM submission_files WHERE submission_id = $1', [id]);
+      for (const file of filesRes.rows) {
+        if (file.s3_key) {
+          try {
+            await deleteFromR2(file.s3_key);
+          } catch (r2Err) {
+            request.log.warn(`Failed to delete object from R2 (${file.s3_key}): ${r2Err.message}`);
+          }
+        }
+      }
+
+      await client.query('BEGIN');
+
+      // Delete submission (CASCADE handles submission_authors, submission_files, reviews, reviewer_assignments)
+      await client.query('DELETE FROM submissions WHERE id = $1', [id]);
+
+      await client.query('COMMIT');
+
+      await logAudit({
+        conferenceId: submission.conference_id,
+        userId: request.currentUser.id,
+        action: isOwner ? 'SUBMISSION_WITHDRAWN' : 'ADMIN_DELETED_SUBMISSION',
+        entityType: 'submission',
+        entityId: id,
+        details: { submissionNumber: submission.submission_number, title: submission.title },
+      });
+
+      return { message: 'Submission deleted successfully', id };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      return reply.code(500).send({ error: 'Failed to delete submission', details: err.message });
+    } finally {
+      client.release();
+    }
+  });
+
+  // Update submission status (Admin / Chair)
+  fastify.patch('/:id/status', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
+    const { id } = request.params;
+    const { status, notes } = request.body || {};
+
+    const validStatuses = ['draft', 'submitted', 'under_review', 'revision_required', 'accepted', 'rejected', 'camera_ready_pending', 'camera_ready_approved'];
+    if (!status || !validStatuses.includes(status)) {
+      return reply.code(400).send({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+    }
+
+    try {
+      const res = await db.query(
+        `UPDATE submissions SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`,
+        [status, id]
+      );
+      if (res.rows.length === 0) {
+        return reply.code(404).send({ error: 'Submission not found' });
+      }
+
+      const updatedSub = res.rows[0];
+
+      await logAudit({
+        conferenceId: updatedSub.conference_id,
+        userId: request.currentUser.id,
+        action: 'SUBMISSION_STATUS_UPDATED',
+        entityType: 'submission',
+        entityId: id,
+        details: { newStatus: status, notes },
+      });
+
+      return { submission: updatedSub };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed to update submission status', details: err.message });
     }
   });
 
