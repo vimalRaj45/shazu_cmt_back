@@ -10,6 +10,7 @@
     "db:migrate": "node src/db/migrate.js",
     "db:seed": "node src/db/seed.js",
     "db:truncate": "node src/db/truncate.js",
+    "db:truncate:all": "node src/db/truncate.js --all",
     "db:reset": "node src/db/reset.js",
     "test": "node test/test_all_endpoints.js"
   },
