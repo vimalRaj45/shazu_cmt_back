@@ -432,6 +432,33 @@ async function sendCameraReadyStatusEmail({ author, conference, submission, stat
   });
 }
 
+// 7. Paper Withdrawn Notification
+async function sendWithdrawalNotification({ toEmail, toName, paperTitle, submissionNumber, conferenceName, conferenceId }) {
+  const html = wrapHtml(
+    `Paper Withdrawn: #${submissionNumber}`,
+    `
+    <h3>Dear ${toName},</h3>
+    <p>Please be informed that the following submission has been withdrawn from <strong>${conferenceName}</strong>:</p>
+    <div style="background: #fff5f5; border-left: 4px solid #e53e3e; padding: 16px; margin: 15px 0;">
+      <p style="margin: 0 0 8px 0;"><strong>Submission ID:</strong> ${submissionNumber}</p>
+      <p style="margin: 0 0 8px 0;"><strong>Title:</strong> ${paperTitle}</p>
+      <p style="margin: 0;"><strong>Status:</strong> <span style="color: #e53e3e; font-weight: bold;">WITHDRAWN / REMOVED</span></p>
+    </div>
+    <p>All associated files, manuscript records, and reviewer assignments have been completely removed from the system. If you were assigned to review this paper, no further evaluation is required.</p>
+    <p>Thank you for your valuable contribution to <strong>${conferenceName}</strong>.</p>
+    `
+  );
+
+  return sendEmail({
+    toEmail,
+    toName,
+    subject: `[${conferenceName}] Paper Withdrawn Notification: #${submissionNumber}`,
+    htmlContent: html,
+    templateName: 'paper_withdrawn',
+    conferenceId,
+  });
+}
+
 module.exports = {
   sendEmail,
   sendWelcomeEmail,
@@ -440,5 +467,6 @@ module.exports = {
   sendDecisionNotification,
   sendBroadcastAnnouncement,
   sendCameraReadyStatusEmail,
+  sendWithdrawalNotification,
 };
 

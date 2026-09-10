@@ -3,7 +3,7 @@ const archiver = require('archiver');
 const db = require('../config/db');
 const { authenticate, requireRoles } = require('../middlewares/auth');
 const { uploadToR2, getDownloadPresignedUrl, deleteFromR2, getObjectBuffer } = require('../config/r2');
-const { sendSubmissionConfirmation } = require('../services/emailService');
+const { sendSubmissionConfirmation, sendWithdrawalNotification } = require('../services/emailService');
 const { logAudit } = require('../services/auditService');
 
 async function submissionRoutes(fastify, options) {
@@ -378,7 +378,21 @@ async function submissionRoutes(fastify, options) {
         return reply.code(400).send({ error: 'Cannot delete paper that has already been accepted.' });
       }
 
-      // Fetch all files to delete from R2
+      // Fetch conference details
+      const confRes = await client.query('SELECT * FROM conferences WHERE id = $1', [submission.conference_id]);
+      const conference = confRes.rows[0] || {};
+
+      // Fetch assigned reviewers so we can notify them of the paper withdrawal
+      const assignedReviewersRes = await client.query(
+        `SELECT u.email, u.first_name, u.last_name 
+         FROM reviewer_assignments ra
+         JOIN users u ON ra.reviewer_id = u.id
+         WHERE ra.submission_id = $1`,
+        [id]
+      );
+      const assignedReviewers = assignedReviewersRes.rows;
+
+      // 1. Fetch and permanently delete all uploaded files from Cloudflare R2
       const filesRes = await client.query('SELECT * FROM submission_files WHERE submission_id = $1', [id]);
       for (const file of filesRes.rows) {
         if (file.s3_key) {
@@ -392,21 +406,70 @@ async function submissionRoutes(fastify, options) {
 
       await client.query('BEGIN');
 
-      // Delete submission (CASCADE handles submission_authors, submission_files, reviews, reviewer_assignments)
+      // 2. Explicitly delete all associated child records across all dependent tables
+      // (a) Session presentations (conference schedule slots)
+      await client.query('DELETE FROM session_presentations WHERE submission_id = $1', [id]);
+
+      // (b) Paper decisions (accept / reject / revision decision history)
+      await client.query('DELETE FROM paper_decisions WHERE submission_id = $1', [id]);
+
+      // (c) Peer reviews (scores, 9-question evaluations, feedback, chair confidential notes)
+      await client.query('DELETE FROM reviews WHERE submission_id = $1', [id]);
+
+      // (d) Conflict of interest declarations
+      await client.query('DELETE FROM conflicts WHERE submission_id = $1', [id]);
+
+      // (e) Reviewer assignments and invitations
+      await client.query('DELETE FROM reviewer_assignments WHERE submission_id = $1', [id]);
+
+      // (f) Submission files records
+      await client.query('DELETE FROM submission_files WHERE submission_id = $1', [id]);
+
+      // (g) Submission authors and co-authors
+      await client.query('DELETE FROM submission_authors WHERE submission_id = $1', [id]);
+
+      // (h) Finally, delete the main paper submission record
       await client.query('DELETE FROM submissions WHERE id = $1', [id]);
 
       await client.query('COMMIT');
 
+      // Log audit trail
       await logAudit({
         conferenceId: submission.conference_id,
         userId: request.currentUser.id,
         action: isOwner ? 'SUBMISSION_WITHDRAWN' : 'ADMIN_DELETED_SUBMISSION',
         entityType: 'submission',
         entityId: id,
-        details: { submissionNumber: submission.submission_number, title: submission.title },
+        details: { 
+          submissionNumber: submission.submission_number, 
+          title: submission.title,
+          filesRemoved: filesRes.rows.length,
+          reviewersNotified: assignedReviewers.length,
+        },
       });
 
-      return { message: 'Submission deleted successfully', id };
+      // Notify assigned reviewers asynchronously
+      if (assignedReviewers.length > 0 && typeof sendWithdrawalNotification === 'function') {
+        for (const rev of assignedReviewers) {
+          try {
+            await sendWithdrawalNotification({
+              toEmail: rev.email,
+              toName: `${rev.first_name} ${rev.last_name}`,
+              paperTitle: submission.title,
+              submissionNumber: submission.submission_number,
+              conferenceName: conference.name || conference.short_name || 'Conference',
+              conferenceId: submission.conference_id,
+            });
+          } catch (mailErr) {
+            request.log.warn(`Failed to send withdrawal notification to reviewer ${rev.email}: ${mailErr.message}`);
+          }
+        }
+      }
+
+      return { 
+        message: 'Submission and all associated manuscripts, files, reviews, and assignments deleted successfully', 
+        id 
+      };
     } catch (err) {
       await client.query('ROLLBACK');
       return reply.code(500).send({ error: 'Failed to delete submission', details: err.message });
