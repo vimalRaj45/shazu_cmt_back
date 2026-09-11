@@ -449,23 +449,47 @@ async function sendWithdrawalNotification({ toEmail, toName, paperTitle, submiss
     `
   );
 
+  return sendEmail({
+    toEmail,
+    toName,
+    subject: `[${conferenceName}] Paper Withdrawn Notification: #${submissionNumber}`,
+    htmlContent: html,
+    templateName: 'paper_withdrawn',
+    conferenceId,
+  });
+}
+
 // 9. Program Committee Invitation Notification
 async function sendCommitteeInvitation({ reviewer, conference, tempPassword }) {
+  const loginUrl = process.env.FRONTEND_URL || 'https://www.cmt.shazusofttechnologies.org/login';
+
   const html = wrapHtml(
     'Program Committee Invitation',
     `
     <h3>Dear ${reviewer.first_name} ${reviewer.last_name || ''},</h3>
     <p>You have been formally enrolled as a Peer Reviewer and Technical Program Committee member for <strong>${conference.name}</strong> (${conference.short_name}).</p>
-    <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 16px; margin: 15px 0;">
+    
+    <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 18px; margin: 18px 0; border-radius: 4px;">
       <p style="margin: 0 0 8px 0;"><strong>Conference:</strong> ${conference.name}</p>
       <p style="margin: 0 0 8px 0;"><strong>Role:</strong> Technical Program Committee / Peer Reviewer</p>
+      <p style="margin: 0 0 8px 0;"><strong>Account Email:</strong> <code>${reviewer.email}</code></p>
       ${
         tempPassword
-          ? `<p style="margin: 0 0 8px 0;"><strong>Temporary Password:</strong> <code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;font-size:1.1em;">${tempPassword}</code></p>
-             <p style="margin: 0; font-size: 0.875rem; color: #64748b;">Please sign in and update your profile password.</p>`
-          : '<p style="margin: 0;">You can access your reviewer desk using your registered account credentials.</p>'
+          ? `<p style="margin: 0 0 8px 0;"><strong>Temporary Password:</strong> <code style="background:#e2e8f0;padding:3px 8px;border-radius:4px;font-size:1.1em;color:#0f2942;">${tempPassword}</code></p>
+             <p style="margin: 0; font-size: 0.875rem; color: #475569;"><em>Please sign in and update your password under your Profile settings.</em></p>`
+          : '<p style="margin: 0; font-size: 0.875rem; color: #475569;">You can sign in using your existing registered account credentials.</p>'
       }
     </div>
+
+    <div style="text-align: center; margin: 24px 0;">
+      <a href="${loginUrl}" style="display: inline-block; padding: 12px 28px; background: #1565C0; color: #ffffff !important; text-decoration: none; border-radius: 6px; font-weight: 700; font-size: 15px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+        Sign In to Reviewer Portal →
+      </a>
+    </div>
+
+    <p style="font-size: 0.9rem; color: #64748b; margin-top: 20px;">
+      Direct Portal URL: <a href="${loginUrl}" style="color: #1565C0;">${loginUrl}</a>
+    </p>
     <p>Thank you for contributing your valuable academic expertise to <strong>${conference.short_name}</strong>.</p>
     `
   );
@@ -473,10 +497,46 @@ async function sendCommitteeInvitation({ reviewer, conference, tempPassword }) {
   return sendEmail({
     toEmail: reviewer.email,
     toName: `${reviewer.first_name} ${reviewer.last_name || ''}`.trim(),
-    subject: `[${conference.short_name}] Program Committee Invitation`,
+    subject: `[${conference.short_name}] Program Committee Invitation & Reviewer Access`,
     htmlContent: html,
     templateName: 'committee_invitation',
     conferenceId: conference.id,
+  });
+}
+
+// 10. Password Reset Notification
+async function sendPasswordResetEmail({ user, resetUrl }) {
+  const html = wrapHtml(
+    'Password Reset Request',
+    `
+    <h3>Dear ${user.first_name} ${user.last_name || ''},</h3>
+    <p>We received a request to reset the password for your account (<strong>${user.email}</strong>) on the <strong>Shazu Soft Conference Management Tool (CJMS)</strong>.</p>
+    
+    <div style="background: #f8fafc; border-left: 4px solid #1565C0; padding: 18px; margin: 18px 0; border-radius: 4px;">
+      <p style="margin: 0 0 8px 0;"><strong>Security Notice:</strong> This password reset link is valid for <strong>60 minutes</strong>.</p>
+      <p style="margin: 0; font-size: 0.875rem; color: #64748b;">If you did not request this password reset, no action is required and your account remains secure.</p>
+    </div>
+
+    <div style="text-align: center; margin: 24px 0;">
+      <a href="${resetUrl}" style="display: inline-block; padding: 12px 28px; background: #1565C0; color: #ffffff !important; text-decoration: none; border-radius: 6px; font-weight: 700; font-size: 15px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+        Reset Your Password →
+      </a>
+    </div>
+
+    <p style="font-size: 0.85rem; color: #64748b; margin-top: 20px; word-break: break-all;">
+      Or copy and paste this link into your browser:<br/>
+      <a href="${resetUrl}" style="color: #1565C0;">${resetUrl}</a>
+    </p>
+    <p>Best regards,<br/>Shazu Soft CMT Security Team</p>
+    `
+  );
+
+  return sendEmail({
+    toEmail: user.email,
+    toName: `${user.first_name} ${user.last_name || ''}`.trim(),
+    subject: `[Shazu Soft CMT] Password Reset Instructions`,
+    htmlContent: html,
+    templateName: 'password_reset',
   });
 }
 
@@ -486,10 +546,9 @@ module.exports = {
   sendSubmissionConfirmation,
   sendReviewerInvitation,
   sendCommitteeInvitation,
+  sendPasswordResetEmail,
   sendDecisionNotification,
   sendBroadcastAnnouncement,
   sendCameraReadyStatusEmail,
   sendWithdrawalNotification,
 };
-
-}

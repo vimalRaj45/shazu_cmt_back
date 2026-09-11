@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const db = require('../config/db');
 const { authenticate } = require('../middlewares/auth');
-const { sendWelcomeEmail } = require('../services/emailService');
+const { sendWelcomeEmail, sendPasswordResetEmail } = require('../services/emailService');
 const { logAudit } = require('../services/auditService');
 const { fetchOrcidProfile, cleanOrcid, isValidOrcid, getOrcidOAuthUrl, exchangeOrcidOAuthCode } = require('../services/orcidService');
 const { verifyTurnstileToken } = require('../services/turnstileService');
@@ -412,6 +412,143 @@ async function authRoutes(fastify, options) {
       return { user: res.rows[0] };
     } catch (err) {
       return reply.code(500).send({ error: 'Failed to update profile', details: err.message });
+    }
+  });
+
+  // Request Password Reset Link
+  fastify.post('/forgot-password', async (request, reply) => {
+    const { email } = request.body || {};
+    if (!email) {
+      return reply.code(400).send({ error: 'Email address is required.' });
+    }
+
+    try {
+      const cleanEmail = email.toLowerCase().trim();
+      const res = await db.query('SELECT id, email, first_name, last_name FROM users WHERE email = $1', [cleanEmail]);
+
+      if (res.rows.length === 0) {
+        // Return generic message to prevent email enumeration
+        return { message: 'If an account exists with this email, a password reset link has been dispatched.' };
+      }
+
+      const user = res.rows[0];
+      const resetToken = fastify.jwt.sign(
+        { userId: user.id, email: user.email, purpose: 'password_reset' },
+        { expiresIn: '1h' }
+      );
+
+      const frontendUrl = process.env.FRONTEND_URL || 'https://www.cmt.shazusofttechnologies.org';
+      const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
+
+      if (sendPasswordResetEmail) {
+        try {
+          await sendPasswordResetEmail({ user, resetUrl });
+        } catch (emailErr) {
+          console.warn('[Forgot Password] Email sending error:', emailErr.message);
+        }
+      }
+
+      await logAudit({
+        userId: user.id,
+        action: 'USER_REQUESTED_PASSWORD_RESET',
+        entityType: 'user',
+        entityId: user.id,
+        details: { email: user.email },
+      });
+
+      return { message: 'Password reset link sent! Please check your email inbox.' };
+    } catch (err) {
+      console.error('[Forgot Password Error]:', err);
+      return reply.code(500).send({ error: 'Failed to process password reset request', details: err.message });
+    }
+  });
+
+  // Set New Password using Reset Token
+  fastify.post('/reset-password', async (request, reply) => {
+    const { token, newPassword } = request.body || {};
+    if (!token || !newPassword) {
+      return reply.code(400).send({ error: 'Reset token and new password are required.' });
+    }
+
+    if (newPassword.length < 6) {
+      return reply.code(400).send({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    try {
+      let decoded;
+      try {
+        decoded = fastify.jwt.verify(token);
+      } catch (jwtErr) {
+        return reply.code(400).send({ error: 'Invalid or expired password reset link. Please request a new one.' });
+      }
+
+      if (decoded.purpose !== 'password_reset' || !decoded.userId) {
+        return reply.code(400).send({ error: 'Invalid reset token purpose.' });
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+      const updateRes = await db.query(
+        'UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING id, email',
+        [passwordHash, decoded.userId]
+      );
+
+      if (updateRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'User account not found.' });
+      }
+
+      await logAudit({
+        userId: decoded.userId,
+        action: 'USER_COMPLETED_PASSWORD_RESET',
+        entityType: 'user',
+        entityId: decoded.userId,
+        details: { email: decoded.email },
+      });
+
+      return { message: 'Password has been reset successfully! You can now sign in.' };
+    } catch (err) {
+      console.error('[Reset Password Error]:', err);
+      return reply.code(500).send({ error: 'Failed to reset password', details: err.message });
+    }
+  });
+
+  // Change Password for Logged-in User
+  fastify.post('/change-password', { preHandler: [authenticate] }, async (request, reply) => {
+    const { currentPassword, newPassword } = request.body || {};
+    if (!newPassword || newPassword.length < 6) {
+      return reply.code(400).send({ error: 'New password must be at least 6 characters long.' });
+    }
+
+    try {
+      const userRes = await db.query('SELECT id, password_hash FROM users WHERE id = $1', [request.currentUser.id]);
+      if (userRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'User not found.' });
+      }
+
+      const user = userRes.rows[0];
+      if (currentPassword) {
+        const matches = await bcrypt.compare(currentPassword, user.password_hash);
+        if (!matches) {
+          return reply.code(400).send({ error: 'Current password does not match.' });
+        }
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+      await db.query('UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [
+        passwordHash,
+        request.currentUser.id,
+      ]);
+
+      await logAudit({
+        userId: request.currentUser.id,
+        action: 'USER_CHANGED_PASSWORD',
+        entityType: 'user',
+        entityId: request.currentUser.id,
+      });
+
+      return { message: 'Password updated successfully!' };
+    } catch (err) {
+      console.error('[Change Password Error]:', err);
+      return reply.code(500).send({ error: 'Failed to change password', details: err.message });
     }
   });
 }
