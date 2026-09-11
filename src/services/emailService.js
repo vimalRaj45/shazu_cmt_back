@@ -449,13 +449,34 @@ async function sendWithdrawalNotification({ toEmail, toName, paperTitle, submiss
     `
   );
 
+// 9. Program Committee Invitation Notification
+async function sendCommitteeInvitation({ reviewer, conference, tempPassword }) {
+  const html = wrapHtml(
+    'Program Committee Invitation',
+    `
+    <h3>Dear ${reviewer.first_name} ${reviewer.last_name || ''},</h3>
+    <p>You have been formally enrolled as a Peer Reviewer and Technical Program Committee member for <strong>${conference.name}</strong> (${conference.short_name}).</p>
+    <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 16px; margin: 15px 0;">
+      <p style="margin: 0 0 8px 0;"><strong>Conference:</strong> ${conference.name}</p>
+      <p style="margin: 0 0 8px 0;"><strong>Role:</strong> Technical Program Committee / Peer Reviewer</p>
+      ${
+        tempPassword
+          ? `<p style="margin: 0 0 8px 0;"><strong>Temporary Password:</strong> <code style="background:#e2e8f0;padding:2px 6px;border-radius:4px;font-size:1.1em;">${tempPassword}</code></p>
+             <p style="margin: 0; font-size: 0.875rem; color: #64748b;">Please sign in and update your profile password.</p>`
+          : '<p style="margin: 0;">You can access your reviewer desk using your registered account credentials.</p>'
+      }
+    </div>
+    <p>Thank you for contributing your valuable academic expertise to <strong>${conference.short_name}</strong>.</p>
+    `
+  );
+
   return sendEmail({
-    toEmail,
-    toName,
-    subject: `[${conferenceName}] Paper Withdrawn Notification: #${submissionNumber}`,
+    toEmail: reviewer.email,
+    toName: `${reviewer.first_name} ${reviewer.last_name || ''}`.trim(),
+    subject: `[${conference.short_name}] Program Committee Invitation`,
     htmlContent: html,
-    templateName: 'paper_withdrawn',
-    conferenceId,
+    templateName: 'committee_invitation',
+    conferenceId: conference.id,
   });
 }
 
@@ -464,9 +485,11 @@ module.exports = {
   sendWelcomeEmail,
   sendSubmissionConfirmation,
   sendReviewerInvitation,
+  sendCommitteeInvitation,
   sendDecisionNotification,
   sendBroadcastAnnouncement,
   sendCameraReadyStatusEmail,
   sendWithdrawalNotification,
 };
 
+}

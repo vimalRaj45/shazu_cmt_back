@@ -1,6 +1,7 @@
+const bcrypt = require('bcryptjs');
 const db = require('../config/db');
 const { authenticate, requireRoles } = require('../middlewares/auth');
-const { sendReviewerInvitation } = require('../services/emailService');
+const { sendReviewerInvitation, sendCommitteeInvitation } = require('../services/emailService');
 const { logAudit } = require('../services/auditService');
 const { calculateReviewerMatchScore, generateAiAutoAssignmentPlan } = require('../services/aiAssignService');
 
@@ -8,6 +9,10 @@ async function reviewerRoutes(fastify, options) {
   // Get conference reviewer pool (with status and load count)
   fastify.get('/conference/:conferenceId', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
     const { conferenceId } = request.params;
+    const confId = parseInt(conferenceId, 10);
+    if (!confId || isNaN(confId)) {
+      return reply.code(400).send({ error: 'Invalid conference ID' });
+    }
     try {
       const res = await db.query(
         `SELECT u.id, u.email, u.first_name, u.last_name, u.institution, u.department, u.country,
@@ -24,7 +29,7 @@ async function reviewerRoutes(fastify, options) {
          JOIN users u ON cr.reviewer_id = u.id
          WHERE cr.conference_id = $1
          ORDER BY u.first_name ASC`,
-        [conferenceId]
+        [confId]
       );
       return { reviewers: res.rows };
     } catch (err) {
@@ -32,22 +37,69 @@ async function reviewerRoutes(fastify, options) {
     }
   });
 
-  // Invite Reviewer to conference
+  // Invite Reviewer to conference program committee
   fastify.post('/conference/:conferenceId/invite', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
     const { conferenceId } = request.params;
     const { reviewerId, email } = request.body || {};
 
+    const confId = parseInt(conferenceId, 10);
+    if (!confId || isNaN(confId)) {
+      return reply.code(400).send({ error: 'Invalid conference ID. Please select a valid conference.' });
+    }
+
     try {
+      // Validate conference exists
+      const confRes = await db.query('SELECT id, name, short_name FROM conferences WHERE id = $1', [confId]);
+      if (confRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'Conference not found. Please ensure the conference is active.' });
+      }
+      const conference = confRes.rows[0];
+
       let targetUserId = reviewerId;
+      let targetUser = null;
+      let tempPassword = null;
 
       if (!targetUserId && email) {
-        // Find or check user by email
-        const uRes = await db.query('SELECT id FROM users WHERE email = $1', [email.toLowerCase().trim()]);
+        const cleanEmail = String(email).toLowerCase().trim();
+        const uRes = await db.query('SELECT id, email, first_name, last_name, role FROM users WHERE email = $1', [cleanEmail]);
         if (uRes.rows.length > 0) {
           targetUserId = uRes.rows[0].id;
+          targetUser = uRes.rows[0];
+          // Elevate user role if author so they can perform reviews
+          if (targetUser.role === 'author') {
+            await db.query("UPDATE users SET role = 'reviewer' WHERE id = $1", [targetUserId]);
+          }
         } else {
-          return reply.code(404).send({ error: 'No user found with this email. Please ensure the user has an account.' });
+          // Provision new reviewer account
+          const usernamePart = cleanEmail.split('@')[0];
+          const capitalizedFirst = usernamePart.charAt(0).toUpperCase() + usernamePart.slice(1);
+          tempPassword = 'Rev_' + Math.random().toString(36).slice(-6) + '!';
+          const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+          const newUserRes = await db.query(
+            `INSERT INTO users (
+               email, password_hash, first_name, last_name, role,
+               institution, department, designation, domain
+             )
+             VALUES ($1, $2, $3, $4, 'reviewer', 'Academic / Research Institution', 'Peer Review Committee', 'Peer Reviewer', 'Computer Science')
+             RETURNING id, email, first_name, last_name, role;`,
+            [cleanEmail, passwordHash, capitalizedFirst, 'Reviewer']
+          );
+          targetUser = newUserRes.rows[0];
+          targetUserId = targetUser.id;
         }
+      } else if (targetUserId) {
+        const uRes = await db.query('SELECT id, email, first_name, last_name, role FROM users WHERE id = $1', [targetUserId]);
+        if (uRes.rows.length > 0) {
+          targetUser = uRes.rows[0];
+          if (targetUser.role === 'author') {
+            await db.query("UPDATE users SET role = 'reviewer' WHERE id = $1", [targetUserId]);
+          }
+        }
+      }
+
+      if (!targetUserId) {
+        return reply.code(400).send({ error: 'Reviewer email or account ID is required.' });
       }
 
       const res = await db.query(
@@ -55,11 +107,38 @@ async function reviewerRoutes(fastify, options) {
          VALUES ($1, $2, 'accepted')
          ON CONFLICT (conference_id, reviewer_id) DO UPDATE SET status = 'accepted'
          RETURNING *;`,
-        [conferenceId, targetUserId]
+        [confId, targetUserId]
       );
 
-      return { invitation: res.rows[0], message: 'Reviewer added to conference program committee' };
+      // Send committee invitation notification email asynchronously
+      if (targetUser && targetUser.email && sendCommitteeInvitation) {
+        try {
+          await sendCommitteeInvitation({
+            reviewer: targetUser,
+            conference,
+            tempPassword,
+          });
+        } catch (emailErr) {
+          console.warn('[Reviewer Invite] Email notification error (non-fatal):', emailErr.message);
+        }
+      }
+
+      await logAudit({
+        userId: request.currentUser?.id,
+        action: 'REVIEWER_INVITED_TO_COMMITTEE',
+        entityType: 'conference_reviewers',
+        entityId: res.rows[0]?.id,
+        details: { conferenceId: confId, reviewerId: targetUserId, email: targetUser?.email },
+      });
+
+      return {
+        invitation: res.rows[0],
+        reviewer: targetUser,
+        tempPassword,
+        message: `${targetUser ? `${targetUser.first_name} (${targetUser.email})` : 'Reviewer'} successfully enrolled into the Program Committee!`,
+      };
     } catch (err) {
+      console.error('[Reviewer Invite Error]:', err);
       return reply.code(500).send({ error: 'Failed to invite reviewer', details: err.message });
     }
   });
