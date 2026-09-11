@@ -3,9 +3,27 @@ const { authenticate, requireRoles } = require('../middlewares/auth');
 const { logAudit } = require('../services/auditService');
 
 async function conferenceRoutes(fastify, options) {
-  // Public/All users: List conferences
+  // List conferences (Regular users only see active & non-completed; Admins see all)
   fastify.get('/', async (request, reply) => {
     try {
+      let isAdminOrChair = false;
+      try {
+        const authHeader = request.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          const decoded = fastify.jwt.verify(token);
+          if (decoded && (decoded.role === 'admin' || decoded.role === 'chair')) {
+            isAdminOrChair = true;
+          }
+        }
+      } catch (_) {}
+
+      const { all } = request.query || {};
+      let whereClause = '';
+      if (!isAdminOrChair && all !== 'true') {
+        whereClause = `WHERE (c.is_active IS NULL OR c.is_active = true) AND c.status != 'completed'`;
+      }
+
       const res = await db.query(`
         SELECT c.*, 
                u.first_name as creator_first_name, u.last_name as creator_last_name,
@@ -13,6 +31,7 @@ async function conferenceRoutes(fastify, options) {
                (SELECT COUNT(*) FROM submissions WHERE conference_id = c.id) as submission_count
         FROM conferences c
         LEFT JOIN users u ON c.created_by = u.id
+        ${whereClause}
         ORDER BY c.start_date DESC
       `);
       return { conferences: res.rows };
@@ -184,6 +203,7 @@ async function conferenceRoutes(fastify, options) {
       decisionDate,
       cameraReadyDeadline,
       status,
+      isActive,
     } = request.body || {};
 
     try {
@@ -201,8 +221,9 @@ async function conferenceRoutes(fastify, options) {
             decision_date = COALESCE($10, decision_date),
             camera_ready_deadline = COALESCE($11, camera_ready_deadline),
             status = COALESCE($12, status),
+            is_active = COALESCE($13, is_active),
             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $13
+         WHERE id = $14
          RETURNING *;`,
         [
           name,
@@ -217,6 +238,7 @@ async function conferenceRoutes(fastify, options) {
           decisionDate,
           cameraReadyDeadline,
           status,
+          isActive !== undefined ? isActive : null,
           id,
         ]
       );
@@ -231,7 +253,7 @@ async function conferenceRoutes(fastify, options) {
         action: 'CONFERENCE_UPDATED',
         entityType: 'conference',
         entityId: id,
-        details: { status, name },
+        details: { status, name, isActive },
       });
 
       return { conference: res.rows[0] };
@@ -240,9 +262,51 @@ async function conferenceRoutes(fastify, options) {
     }
   });
 
+  // Toggle Conference Active/Deactivated State (Hide from users)
+  fastify.patch('/:id/toggle-active', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
+    const { id } = request.params;
+    try {
+      const confRes = await db.query('SELECT * FROM conferences WHERE id = $1', [id]);
+      if (confRes.rows.length === 0) {
+        return reply.code(404).send({ error: 'Conference not found' });
+      }
+
+      const conf = confRes.rows[0];
+      const newActiveState = !(conf.is_active ?? true);
+
+      const updateRes = await db.query(
+        `UPDATE conferences 
+         SET is_active = $1, 
+             updated_at = CURRENT_TIMESTAMP 
+         WHERE id = $2 
+         RETURNING *;`,
+        [newActiveState, id]
+      );
+
+      await logAudit({
+        conferenceId: id,
+        userId: request.currentUser.id,
+        action: newActiveState ? 'CONFERENCE_ACTIVATED' : 'CONFERENCE_DEACTIVATED',
+        entityType: 'conference',
+        entityId: id,
+        details: { conferenceName: conf.name, isActive: newActiveState },
+      });
+
+      return {
+        message: newActiveState
+          ? 'Conference activated and now visible to users.'
+          : 'Conference deactivated and hidden from regular users.',
+        conference: updateRes.rows[0],
+      };
+    } catch (err) {
+      return reply.code(500).send({ error: 'Failed to toggle conference status', details: err.message });
+    }
+  });
+
   // Delete conference (Admin only)
   fastify.delete('/:id', { preHandler: [authenticate, requireRoles('admin')] }, async (request, reply) => {
     const { id } = request.params;
+    const { force } = request.query || {};
     const client = await db.getClient();
     try {
       const confRes = await client.query('SELECT * FROM conferences WHERE id = $1', [id]);
@@ -255,13 +319,27 @@ async function conferenceRoutes(fastify, options) {
       // Check if active submissions exist
       const subRes = await client.query('SELECT COUNT(*) FROM submissions WHERE conference_id = $1', [id]);
       const subCount = parseInt(subRes.rows[0].count, 10);
-      if (subCount > 0) {
+      if (subCount > 0 && force !== 'true') {
         return reply.code(400).send({
-          error: `Cannot delete conference with ${subCount} existing paper submissions. Please archive or set status to 'completed' instead.`,
+          error: `Cannot delete conference with ${subCount} existing paper submissions. You can Deactivate it (to hide from users) or force delete.`,
+          hasSubmissions: true,
+          submissionCount: subCount,
         });
       }
 
       await client.query('BEGIN');
+      if (force === 'true') {
+        // Cascade delete submissions related records if forced
+        await client.query('DELETE FROM reviews WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+        await client.query('DELETE FROM reviewer_assignments WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+        await client.query('DELETE FROM submission_files WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+        await client.query('DELETE FROM submission_authors WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+        await client.query('DELETE FROM paper_decisions WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+        await client.query('DELETE FROM submissions WHERE conference_id = $1', [id]);
+      }
+      await client.query('DELETE FROM conference_chairs WHERE conference_id = $1', [id]);
+      await client.query('DELETE FROM conference_reviewers WHERE conference_id = $1', [id]);
+      await client.query('DELETE FROM tracks WHERE conference_id = $1', [id]);
       await client.query('DELETE FROM conferences WHERE id = $1', [id]);
       await client.query('COMMIT');
 
@@ -271,7 +349,7 @@ async function conferenceRoutes(fastify, options) {
         action: 'ADMIN_DELETED_CONFERENCE',
         entityType: 'conference',
         entityId: id,
-        details: { conferenceName: conf.name, shortName: conf.short_name },
+        details: { conferenceName: conf.name, shortName: conf.short_name, forced: force === 'true' },
       });
 
       return { message: 'Conference deleted successfully', id };
