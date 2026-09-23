@@ -551,6 +551,11 @@ async function submissionRoutes(fastify, options) {
       const mimeType = data.mimetype;
       const fileSize = buffer.length;
 
+      const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+      if (fileSize > MAX_FILE_SIZE || data.file?.truncated) {
+        return reply.code(400).send({ error: 'File size exceeds the 10 MB limit. Please upload a smaller file.' });
+      }
+
       // Get current version count for this file type to assign next version
       const verRes = await db.query(
         'SELECT COUNT(*) FROM submission_files WHERE submission_id = $1 AND file_type = $2',

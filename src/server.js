@@ -16,7 +16,7 @@ fastify.register(require('@fastify/jwt'), {
 
 fastify.register(require('@fastify/multipart'), {
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50 MB max paper/slides size
+    fileSize: 10 * 1024 * 1024, // 10 MB max paper/slides size
   },
 });
 

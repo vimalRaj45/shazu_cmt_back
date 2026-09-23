@@ -20,8 +20,13 @@ async function userRoutes(fastify, options) {
       }
 
       if (status !== undefined && status !== '') {
-        params.push(status === 'active' || status === 'true');
-        queryText += ` AND is_active = $${params.length}`;
+        const isActiveVal = status === 'active' || status === 'true';
+        params.push(isActiveVal);
+        if (isActiveVal) {
+          queryText += ` AND (is_active = $${params.length} OR is_active IS NULL)`;
+        } else {
+          queryText += ` AND is_active = $${params.length}`;
+        }
       }
 
       if (search) {
