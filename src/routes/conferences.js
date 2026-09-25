@@ -303,8 +303,8 @@ async function conferenceRoutes(fastify, options) {
     }
   });
 
-  // Delete conference (Admin only)
-  fastify.delete('/:id', { preHandler: [authenticate, requireRoles('admin')] }, async (request, reply) => {
+  // Delete conference (Admin / Chair)
+  fastify.delete('/:id', { preHandler: [authenticate, requireRoles('admin', 'chair')] }, async (request, reply) => {
     const { id } = request.params;
     const { force } = request.query || {};
     const client = await db.getClient();
@@ -328,24 +328,56 @@ async function conferenceRoutes(fastify, options) {
       }
 
       await client.query('BEGIN');
-      if (force === 'true') {
-        // Cascade delete submissions related records if forced
-        await client.query('DELETE FROM reviews WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
-        await client.query('DELETE FROM reviewer_assignments WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
-        await client.query('DELETE FROM submission_files WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
-        await client.query('DELETE FROM submission_authors WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
-        await client.query('DELETE FROM paper_decisions WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
-        await client.query('DELETE FROM submissions WHERE conference_id = $1', [id]);
-      }
+
+      // 1. Delete session presentations (referencing conference_sessions and submissions)
+      await client.query(
+        `DELETE FROM session_presentations 
+         WHERE session_id IN (SELECT id FROM conference_sessions WHERE conference_id = $1)
+            OR submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)`,
+        [id]
+      );
+
+      // 2. Delete conference sessions
+      await client.query('DELETE FROM conference_sessions WHERE conference_id = $1', [id]);
+
+      // 3. Delete conflicts
+      await client.query(
+        `DELETE FROM conflicts 
+         WHERE conference_id = $1 
+            OR submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)`,
+        [id]
+      );
+
+      // 4. Delete announcements
+      await client.query('DELETE FROM announcements WHERE conference_id = $1', [id]);
+
+      // 5. Delete submission child records & submissions
+      await client.query('DELETE FROM reviews WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+      await client.query('DELETE FROM reviewer_assignments WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+      await client.query('DELETE FROM paper_decisions WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+      await client.query('DELETE FROM submission_files WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+      await client.query('DELETE FROM submission_authors WHERE submission_id IN (SELECT id FROM submissions WHERE conference_id = $1)', [id]);
+      await client.query('DELETE FROM submissions WHERE conference_id = $1', [id]);
+
+      // 6. Delete conference chairs and reviewers
       await client.query('DELETE FROM conference_chairs WHERE conference_id = $1', [id]);
       await client.query('DELETE FROM conference_reviewers WHERE conference_id = $1', [id]);
+
+      // 7. Delete tracks
       await client.query('DELETE FROM tracks WHERE conference_id = $1', [id]);
+
+      // 8. Disassociate email logs and audit logs (set conference_id to NULL to preserve logs without FK violation)
+      await client.query('UPDATE email_logs SET conference_id = NULL WHERE conference_id = $1', [id]);
+      await client.query('UPDATE audit_logs SET conference_id = NULL WHERE conference_id = $1', [id]);
+
+      // 9. Finally delete the conference itself
       await client.query('DELETE FROM conferences WHERE id = $1', [id]);
+
       await client.query('COMMIT');
 
       await logAudit({
         conferenceId: null,
-        userId: request.currentUser.id,
+        userId: request.currentUser?.id,
         action: 'ADMIN_DELETED_CONFERENCE',
         entityType: 'conference',
         entityId: id,
@@ -355,6 +387,7 @@ async function conferenceRoutes(fastify, options) {
       return { message: 'Conference deleted successfully', id };
     } catch (err) {
       await client.query('ROLLBACK');
+      console.error('[Delete Conference Error]:', err);
       return reply.code(500).send({ error: 'Failed to delete conference', details: err.message });
     } finally {
       client.release();
