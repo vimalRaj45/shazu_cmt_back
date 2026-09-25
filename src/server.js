@@ -44,6 +44,7 @@ fastify.register(require('./routes/emails'), { prefix: '/api/emails' });
 fastify.register(require('./routes/dashboard'), { prefix: '/api/dashboard' });
 fastify.register(require('./routes/reports'), { prefix: '/api/reports' });
 fastify.register(require('./routes/auditLogs'), { prefix: '/api/audit-logs' });
+fastify.register(require('./routes/invitations'), { prefix: '/api/invitations' });
 
 const PORT = parseInt(process.env.PORT, 10) || 5000;
 

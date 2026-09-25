@@ -460,17 +460,15 @@ async function sendWithdrawalNotification({ toEmail, toName, paperTitle, submiss
 }
 
 // 9. Program Committee Invitation Notification
-async function sendCommitteeInvitation({ reviewer, conference, tempPassword }) {
+async function sendCommitteeInvitation({ reviewer, conference, tempPassword, customSubject, customMessage }) {
   const loginUrl = process.env.FRONTEND_URL || 'https://www.cmt.shazusofttechnologies.org/login';
 
-  const html = wrapHtml(
-    'Program Committee Invitation',
-    `
+  const defaultBody = `
     <h3>Dear ${reviewer.first_name} ${reviewer.last_name || ''},</h3>
     <p>You have been formally enrolled as a Peer Reviewer and Technical Program Committee member for <strong>${conference.name}</strong> (${conference.short_name}).</p>
     
     <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 18px; margin: 18px 0; border-radius: 4px;">
-      <p style="margin: 0 0 8px 0;"><strong>Conference:</strong> ${conference.name}</p>
+      <p style="margin: 0 0 8px 0;"><strong>Conference / Publication:</strong> ${conference.name}</p>
       <p style="margin: 0 0 8px 0;"><strong>Role:</strong> Technical Program Committee / Peer Reviewer</p>
       <p style="margin: 0 0 8px 0;"><strong>Account Email:</strong> <code>${reviewer.email}</code></p>
       ${
@@ -480,6 +478,8 @@ async function sendCommitteeInvitation({ reviewer, conference, tempPassword }) {
           : '<p style="margin: 0; font-size: 0.875rem; color: #475569;">You can sign in using your existing registered account credentials.</p>'
       }
     </div>
+
+    ${customMessage ? `<div style="background: #f8fafc; padding: 16px; border-radius: 6px; margin: 16px 0; border: 1px dashed #cbd5e1;"><p style="margin:0; white-space: pre-wrap;">${customMessage}</p></div>` : ''}
 
     <div style="text-align: center; margin: 24px 0;">
       <a href="${loginUrl}" style="display: inline-block; padding: 12px 28px; background: #1565C0; color: #ffffff !important; text-decoration: none; border-radius: 6px; font-weight: 700; font-size: 15px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
@@ -491,15 +491,63 @@ async function sendCommitteeInvitation({ reviewer, conference, tempPassword }) {
       Direct Portal URL: <a href="${loginUrl}" style="color: #1565C0;">${loginUrl}</a>
     </p>
     <p>Thank you for contributing your valuable academic expertise to <strong>${conference.short_name}</strong>.</p>
-    `
-  );
+  `;
+
+  const html = wrapHtml('Program Committee Invitation', defaultBody);
 
   return sendEmail({
     toEmail: reviewer.email,
     toName: `${reviewer.first_name} ${reviewer.last_name || ''}`.trim(),
-    subject: `[${conference.short_name}] Program Committee Invitation & Reviewer Access`,
+    subject: customSubject || `[${conference.short_name}] Program Committee Invitation & Reviewer Access`,
     htmlContent: html,
     templateName: 'committee_invitation',
+    conferenceId: conference.id,
+  });
+}
+
+// 9b. Call for Papers / Author Invitation Notification
+async function sendAuthorInvitation({ author, conference, tempPassword, customSubject, customMessage }) {
+  const submitUrl = `${process.env.FRONTEND_URL || 'https://www.cmt.shazusofttechnologies.org'}/submit-paper`;
+  const registerUrl = `${process.env.FRONTEND_URL || 'https://www.cmt.shazusofttechnologies.org'}/register?ref=${encodeURIComponent(conference.short_name || 'invite')}`;
+
+  const defaultBody = `
+    <h3>Dear ${author.first_name} ${author.last_name || ''},</h3>
+    <p>You are cordially invited to submit your research paper / manuscript to <strong>${conference.name}</strong> (${conference.short_name}).</p>
+    
+    <div style="background: #f0f9ff; border-left: 4px solid #0284c7; padding: 18px; margin: 18px 0; border-radius: 4px;">
+      <p style="margin: 0 0 8px 0;"><strong>Conference / Journal:</strong> ${conference.name}</p>
+      ${conference.submission_deadline ? `<p style="margin: 0 0 8px 0;"><strong>Submission Deadline:</strong> ${new Date(conference.submission_deadline).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p>` : ''}
+      <p style="margin: 0 0 8px 0;"><strong>Account Email:</strong> <code>${author.email}</code></p>
+      ${
+        tempPassword
+          ? `<p style="margin: 0 0 8px 0;"><strong>Temporary Password:</strong> <code style="background:#e2e8f0;padding:3px 8px;border-radius:4px;font-size:1.1em;color:#0f2942;">${tempPassword}</code></p>
+             <p style="margin: 0; font-size: 0.875rem; color: #475569;"><em>We have created an author account for you. Please sign in and set your new password.</em></p>`
+          : '<p style="margin: 0; font-size: 0.875rem; color: #475569;">You can sign in with your registered account or register directly to submit.</p>'
+      }
+    </div>
+
+    ${customMessage ? `<div style="background: #f8fafc; padding: 16px; border-radius: 6px; margin: 16px 0; border: 1px dashed #cbd5e1;"><p style="margin:0; white-space: pre-wrap;">${customMessage}</p></div>` : ''}
+
+    <div style="text-align: center; margin: 24px 0;">
+      <a href="${submitUrl}" style="display: inline-block; padding: 12px 28px; background: #0284c7; color: #ffffff !important; text-decoration: none; border-radius: 6px; font-weight: 700; font-size: 15px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+        Submit Your Manuscript Now →
+      </a>
+    </div>
+
+    <p style="font-size: 0.9rem; color: #64748b; margin-top: 20px;">
+      Submit Online: <a href="${submitUrl}" style="color: #0284c7;">${submitUrl}</a>
+    </p>
+    <p>We look forward to receiving your high-quality academic contributions.</p>
+  `;
+
+  const html = wrapHtml('Call for Papers & Manuscript Invitation', defaultBody);
+
+  return sendEmail({
+    toEmail: author.email,
+    toName: `${author.first_name} ${author.last_name || ''}`.trim(),
+    subject: customSubject || `[Call for Papers] Invitation to Submit to ${conference.short_name || conference.name}`,
+    htmlContent: html,
+    templateName: 'author_invitation',
     conferenceId: conference.id,
   });
 }
@@ -546,6 +594,7 @@ module.exports = {
   sendSubmissionConfirmation,
   sendReviewerInvitation,
   sendCommitteeInvitation,
+  sendAuthorInvitation,
   sendPasswordResetEmail,
   sendDecisionNotification,
   sendBroadcastAnnouncement,
